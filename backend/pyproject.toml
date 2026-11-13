@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shakedown-backend"
+version = "0.1.0"
+description = "Shakedown —— 软件测试 Agent 平台后端"
+readme = "../README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
+    "pgvector>=0.2.5",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "httpx>=0.27",
+    "mcp>=2.3,<3",
+    "cryptography>=42",
+    "jsonschema>=4.21",
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+    "python-multipart>=0.0.9",
+    # Agent 运行时（LangGraph 生态）
+    "langgraph>=0.2",
+    "langchain-core>=0.3",
+]
+
+[project.optional-dependencies]
+openapi = ["openapi-spec-validator>=0.7"]
+treesitter = [
+    "tree-sitter>=0.21",
+    "tree-sitter-python>=0.21",
+    "tree-sitter-javascript>=0.21",
+    "tree-sitter-typescript>=0.21",
+]
+playwright = ["playwright>=1.44"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "integration: 需要数据库 / 外部服务",
+]

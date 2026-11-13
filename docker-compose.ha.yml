@@ -1,0 +1,57 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: shakedown
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shakedown}
+      POSTGRES_DB: shakedown
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shakedown -d shakedown"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SHAKEDOWN_DATABASE_URL: postgresql+psycopg://shakedown:${POSTGRES_PASSWORD:-shakedown}@db:5432/shakedown
+      SHAKEDOWN_WORKER_ENABLED: "false"
+      SHAKEDOWN_SANDBOX_MODE: ${SHAKEDOWN_SANDBOX_MODE:-local}
+      SHAKEDOWN_ENCRYPTION_KEY: ${SHAKEDOWN_ENCRYPTION_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - shakedown-data:/app/var
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      SHAKEDOWN_DATABASE_URL: postgresql+psycopg://shakedown:${POSTGRES_PASSWORD:-shakedown}@db:5432/shakedown
+      SHAKEDOWN_WORKER_ENABLED: "true"
+      SHAKEDOWN_SCHEDULER_ENABLED: "true"
+      SHAKEDOWN_WORKER_CONCURRENCY: ${SHAKEDOWN_WORKER_CONCURRENCY:-2}
+      SHAKEDOWN_SANDBOX_MODE: ${SHAKEDOWN_SANDBOX_MODE:-local}
+      SHAKEDOWN_ENCRYPTION_KEY: ${SHAKEDOWN_ENCRYPTION_KEY:-}
+    volumes:
+      - shakedown-data:/app/var
+    command: ["python", "-m", "app.worker"]
+
+volumes:
+  pgdata:
+  shakedown-data:

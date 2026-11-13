@@ -1,0 +1,59 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: shakedown-db
+    environment:
+      POSTGRES_USER: shakedown
+      POSTGRES_PASSWORD: shakedown
+      POSTGRES_DB: shakedown
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shakedown -d shakedown"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: shakedown-backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SHAKEDOWN_DATABASE_URL: postgresql+psycopg://shakedown:shakedown@db:5432/shakedown
+      SHAKEDOWN_LLM_PROVIDER: ${SHAKEDOWN_LLM_PROVIDER:-mock}
+      SHAKEDOWN_LLM_BASE_URL: ${SHAKEDOWN_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      SHAKEDOWN_LLM_API_KEY: ${SHAKEDOWN_LLM_API_KEY:-}
+      SHAKEDOWN_LLM_MODEL: ${SHAKEDOWN_LLM_MODEL:-shakedown-mock}
+      # 沙箱：berth 需要单独部署（见 docs/berth.md），默认先用本地沙箱跑通链路
+      SHAKEDOWN_SANDBOX_MODE: ${SHAKEDOWN_SANDBOX_MODE:-local}
+      SHAKEDOWN_BERTH_BASE_URL: ${SHAKEDOWN_BERTH_BASE_URL:-http://host.docker.internal:9000}
+      SHAKEDOWN_ENCRYPTION_KEY: ${SHAKEDOWN_ENCRYPTION_KEY:-}
+      SHAKEDOWN_CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+    ports:
+      - "8000:8000"
+    volumes:
+      - shakedown-data:/app/var
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    container_name: shakedown-frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  pgdata:
+  shakedown-data:

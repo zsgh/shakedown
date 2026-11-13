@@ -1,0 +1,179 @@
+openapi: 3.0.3
+info:
+  title: 用户中心 API
+  version: 1.1.0
+  description: 演示用的 OpenAPI 3.0 文档（比 Swagger 2.0 多了管理统计与 traceId 参数）
+servers:
+  - url: http://localhost:9100
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    User:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        email: {type: string}
+        role: {type: string}
+      required: [id, name, email]
+    CreateUser:
+      type: object
+      properties:
+        name: {type: string, minLength: 1}
+        email: {type: string}
+        role: {type: string, enum: [admin, user]}
+      required: [name, email]
+    Order:
+      type: object
+      properties:
+        id: {type: integer}
+        user_id: {type: integer}
+        amount: {type: number}
+        status: {type: string}
+      required: [id, amount, status]
+    CreateOrder:
+      type: object
+      properties:
+        user_id: {type: integer}
+        amount: {type: number, minimum: 1}
+        remark: {type: string, maxLength: 200}
+      required: [user_id, amount]
+    Error:
+      type: object
+      properties:
+        message: {type: string}
+paths:
+  /api/users:
+    get:
+      summary: 用户列表
+      operationId: listUsers
+      parameters:
+        - name: page
+          in: query
+          schema: {type: integer, default: 1}
+          description: 页码
+        - name: size
+          in: query
+          schema: {type: integer, default: 20}
+          description: 每页数量
+      responses:
+        '200':
+          description: 用户列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/User'}
+                  total: {type: integer}
+    post:
+      summary: 创建用户
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateUser'}
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '400':
+          description: 参数不合法
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/users/{id}:
+    get:
+      summary: 用户详情
+      operationId: getUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer}
+        - name: traceId
+          in: query
+          schema: {type: string}
+          description: 链路追踪 ID（Swagger 2.0 里没有这个参数）
+      responses:
+        '200':
+          description: 用户
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '404':
+          description: 用户不存在
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/orders:
+    post:
+      summary: 创建订单
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateOrder'}
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Order'}
+        '400':
+          description: 参数不合法
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/orders/{id}:
+    get:
+      summary: 订单详情
+      operationId: getOrder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        '200':
+          description: 订单
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Order'}
+        '404':
+          description: 订单不存在
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/admin/stats:
+    get:
+      summary: 管理统计
+      operationId: adminStats
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 统计信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users: {type: integer}
+                  orders: {type: integer}
+        '401':
+          description: 未鉴权
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}

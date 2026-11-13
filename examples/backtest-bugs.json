@@ -1,0 +1,11 @@
+[
+  {
+    "id": "B1",
+    "commit": "f624deb",
+    "note": "创建订单未校验 amount 必须大于 0（负数金额被接受）",
+    "paths": ["/api/orders"],
+    "keywords": ["amount", "负数", "零"],
+    "doc_paths": ["docs/api.md"],
+    "spec_paths": ["specs/swagger.json"]
+  }
+]

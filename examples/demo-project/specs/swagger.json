@@ -1,0 +1,152 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "用户中心 API",
+    "version": "1.0.0",
+    "description": "演示用的 Swagger 2.0 文档"
+  },
+  "host": "localhost:9100",
+  "basePath": "/",
+  "schemes": ["http"],
+  "consumes": ["application/json"],
+  "produces": ["application/json"],
+  "securityDefinitions": {
+    "BearerAuth": {
+      "type": "apiKey",
+      "name": "Authorization",
+      "in": "header"
+    }
+  },
+  "paths": {
+    "/api/users": {
+      "get": {
+        "summary": "用户列表",
+        "operationId": "listUsers",
+        "parameters": [
+          {"name": "page", "in": "query", "type": "integer", "default": 1, "description": "页码"},
+          {"name": "size", "in": "query", "type": "integer", "default": 20, "description": "每页数量"}
+        ],
+        "responses": {
+          "200": {
+            "description": "用户列表",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "items": {"type": "array", "items": {"$ref": "#/definitions/User"}},
+                "total": {"type": "integer"}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "创建用户",
+        "operationId": "createUser",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {"$ref": "#/definitions/CreateUser"}
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "schema": {"$ref": "#/definitions/User"}
+          },
+          "400": {"description": "参数不合法", "schema": {"$ref": "#/definitions/Error"}}
+        }
+      }
+    },
+    "/api/users/{id}": {
+      "get": {
+        "summary": "用户详情",
+        "operationId": "getUser",
+        "security": [{"BearerAuth": []}],
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "type": "integer"}
+        ],
+        "responses": {
+          "200": {"description": "用户", "schema": {"$ref": "#/definitions/User"}},
+          "404": {"description": "用户不存在", "schema": {"$ref": "#/definitions/Error"}}
+        }
+      }
+    },
+    "/api/orders": {
+      "post": {
+        "summary": "创建订单",
+        "operationId": "createOrder",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {"$ref": "#/definitions/CreateOrder"}
+          }
+        ],
+        "responses": {
+          "201": {"description": "创建成功", "schema": {"$ref": "#/definitions/Order"}},
+          "400": {"description": "参数不合法", "schema": {"$ref": "#/definitions/Error"}}
+        }
+      }
+    },
+    "/api/orders/{id}": {
+      "get": {
+        "summary": "订单详情",
+        "operationId": "getOrder",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "type": "integer"}
+        ],
+        "responses": {
+          "200": {"description": "订单", "schema": {"$ref": "#/definitions/Order"}},
+          "404": {"description": "订单不存在", "schema": {"$ref": "#/definitions/Error"}}
+        }
+      }
+    }
+  },
+  "definitions": {
+    "User": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "integer"},
+        "name": {"type": "string"},
+        "email": {"type": "string"},
+        "role": {"type": "string"}
+      },
+      "required": ["id", "name", "email"]
+    },
+    "CreateUser": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "email": {"type": "string"},
+        "role": {"type": "string", "enum": ["admin", "user"]}
+      },
+      "required": ["name", "email"]
+    },
+    "Order": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "integer"},
+        "user_id": {"type": "integer"},
+        "amount": {"type": "number"},
+        "status": {"type": "string"}
+      },
+      "required": ["id", "amount", "status"]
+    },
+    "CreateOrder": {
+      "type": "object",
+      "properties": {
+        "user_id": {"type": "integer"},
+        "amount": {"type": "number", "minimum": 1},
+        "remark": {"type": "string", "maxLength": 200}
+      },
+      "required": ["user_id", "amount"]
+    },
+    "Error": {
+      "type": "object",
+      "properties": {"message": {"type": "string"}}
+    }
+  }
+}
