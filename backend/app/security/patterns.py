@@ -1932,3 +1932,71 @@ class ProtocolFuzz(AttackPattern):
             _admin_step(ctx, action="request", name="删除协议探测项目", method="POST", path=page_path + "/delete")
         ]
         return [draft]
+
+
+@register
+class SessionLogout(AttackPattern):
+    id = "session-logout"
+    title = "登出后旧会话 Cookie 仍可用"
+    category = "session"
+    severity = "high"
+    description = "登出必须在服务端删除会话；只清浏览器 Cookie 是假登出。"
+    reference = "CWE-613"
+
+    def applicable(self, ctx: AttackContext) -> tuple[bool, str]:
+        if ctx.login_endpoint is None or ctx.admin_create_user_endpoint is None or not ctx.has_admin:
+            return False, "需要登录接口、管理员建号能力"
+        return True, ""
+
+    def build(self, ctx: AttackContext) -> list[CaseDraft]:
+        login = ctx.login_endpoint
+        create = ctx.admin_create_user_endpoint
+        assert login is not None and create is not None
+        user = "logout{{run_id}}"
+        password = "LogoutPass1!"
+        steps = [
+            _admin_step(
+                ctx, action="request", name="创建一次性用户", method="POST", path=create.path,
+                headers=_form_headers(ctx),
+                body={"username": user, "password": password, "displayName": "logout probe"},
+                assertions=[{"kind": "status_code", "operator": "eq", "expected": 303, "status": "confirmed",
+                             "description": "创建成功", "evidence": _code(create.path, "创建用户 303")}],
+            ),
+            {
+                "action": "request", "name": "登录并保存 Cookie", "method": "POST", "path": login.path,
+                "fresh_client": True, "headers": _form_headers(ctx),
+                "body": {"username": user, "password": password, "next": "/"},
+                "save_cookie": "logout_cookie",
+                "assert": [{"kind": "status_code", "operator": "eq", "expected": 303, "status": "confirmed",
+                            "description": "登录成功", "evidence": _code(login.path, "登录 303")}],
+            },
+            {
+                "action": "request", "name": "登出（服务端应删除会话）", "method": "POST", "path": "/logout",
+                "fresh_client": True, "headers": {"Cookie": "dmgit_session={{logout_cookie}}"},
+                "assert": [{"kind": "status_code", "operator": "in", "expected": [200, 302, 303], "status": "confirmed",
+                            "description": "登出请求成功", "evidence": _code("internal/server/handlers.go", "登出清理会话")}],
+            },
+            {
+                "action": "request", "name": "用旧 Cookie 重放 /me", "method": "GET", "path": "/api/v1/me",
+                "fresh_client": True, "headers": {"Cookie": "dmgit_session={{logout_cookie}}"},
+                "assert": [{"kind": "status_code", "operator": "eq", "expected": 401, "status": "confirmed",
+                            "description": "登出后旧会话必须失效",
+                            "evidence": _policy("SEC-SESSION-LOGOUT", "登出必须删除服务端会话")}],
+            },
+        ]
+        draft = _case(
+            "[攻击] 登出后旧会话不得重放",
+            steps=steps,
+            key="session-logout:cookie",
+            policy_ref="SEC-SESSION-LOGOUT",
+            description="登出后旧 Cookie 仍可访问受保护接口。",
+            tags=["session", "logout", "replay"],
+            evidence=[_policy("SEC-SESSION-LOGOUT", "登出必须删除服务端会话")],
+        )
+        delete = _user_delete_endpoint(ctx)
+        if delete is not None:
+            draft.spec["cleanup"] = [
+                _admin_step(ctx, action="request", name="删除一次性用户", method="POST",
+                            path=delete.path.replace("{name}", user))
+            ]
+        return [draft]

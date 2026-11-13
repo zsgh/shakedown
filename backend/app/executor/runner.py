@@ -33,16 +33,46 @@ class ExecutionOutcome:
     sandbox_task_id: str = ""
 
 
-def _env_for_run(env: Environment, run: Run, artifacts_dir: str, attempt: int = 0) -> dict[str, str]:
+def _referenced_accounts(specs: list[dict[str, Any]]) -> set[str]:
+    """从用例里收集显式引用的账号名，避免把全部项目凭据注入每个沙箱。"""
+    import re
+
+    names: set[str] = set()
+    pattern = re.compile(r"account\.([A-Za-z0-9_-]+)")
+    for spec in specs:
+        text = json.dumps(spec, ensure_ascii=False, default=str)
+        names.update(pattern.findall(text))
+        for match in re.finditer(r'"account"\s*:\s*"([A-Za-z0-9_-]+)"', text):
+            names.add(match.group(1))
+        for precondition in spec.get("preconditions") or []:
+            if isinstance(precondition, dict) and precondition.get("account_ref"):
+                names.add(str(precondition["account_ref"]))
+    return names
+
+
+def _env_for_run(
+    env: Environment,
+    run: Run,
+    artifacts_dir: str,
+    attempt: int = 0,
+    *,
+    account_names: set[str] | None = None,
+    profile: dict[str, Any] | None = None,
+) -> dict[str, str]:
     # 自动重跑沿用同一个 Run，但测试数据必须换一批：
     # 否则像「创建环境变量」这种非幂等步骤，第二次会因同名数据已存在而 400，
     # 把第一次的真实失败原因（例如断言问题）掩盖掉。
     run_token = str(run.id) if attempt <= 0 else f"{run.id}-r{attempt}"
+    accounts = env.accounts
+    if account_names:
+        accounts = {name: value for name, value in env.accounts.items() if name in account_names}
     return {
         "SHAKEDOWN_BASE_URL": env.base_url,
         "SHAKEDOWN_TARGET_DSN": env.target_dsn,
+        "SHAKEDOWN_READ_DSN": env.read_dsn or env.target_dsn,
         "SHAKEDOWN_PROJECT_ID": str(getattr(run, "project_id", "") or ""),
-        "SHAKEDOWN_ACCOUNTS": json.dumps(env.accounts, ensure_ascii=False),
+        "SHAKEDOWN_ACCOUNTS": json.dumps(accounts, ensure_ascii=False),
+        "SHAKEDOWN_PROFILE": json.dumps(profile or {}, ensure_ascii=False),
         "SHAKEDOWN_RUN_ID": run_token,
         "SHAKEDOWN_RESULTS_DIR": "results",
         "SHAKEDOWN_ARTIFACTS_DIR": "artifacts",
@@ -62,21 +92,38 @@ def run_cases_in_sandbox(
     attempt: int = 0,
     endpoint_schemas: dict[str, dict[str, Any]] | None = None,
     should_cancel: Any = None,
+    data_by_case: dict[int, list[dict[str, Any]]] | None = None,
+    file_blobs: dict[int, dict[str, Any]] | None = None,
 ) -> ExecutionOutcome:
     """把一批用例放进沙箱执行一次。``attempt`` > 0 表示同一 Run 内的自动重跑。"""
     specs = []
+    data_by_case = data_by_case or {}
+    file_blobs = file_blobs or {}
     for case in cases:
         spec = copy.deepcopy(case.spec or {})
         if endpoint_schemas:
             normalize_spec(spec, endpoint_schemas)
         spec["id"] = str(case.id)
         spec.setdefault("title", case.title)
+        rows = data_by_case.get(case.id) or []
+        if rows:
+            spec["__data_rows"] = rows
+        if file_blobs:
+            spec["__file_blobs"] = file_blobs
         specs.append(spec)
 
     files = compile_cases(specs)
+    profile = (project.settings_json or {}).get("profile")
     request = SandboxRequest(
         files=files,
-        env=_env_for_run(env, run, artifacts_dir, attempt),
+        env=_env_for_run(
+            env,
+            run,
+            artifacts_dir,
+            attempt,
+            account_names=_referenced_accounts(specs),
+            profile=profile if isinstance(profile, dict) else {},
+        ),
         timeout=600,
         task_id=f"shakedown-{project.id}-{run.id}-{uuid.uuid4().hex[:8]}",
         image="runner",

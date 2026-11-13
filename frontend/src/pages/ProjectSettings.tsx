@@ -32,10 +32,22 @@ export default function ProjectSettings() {
   const [tenant, setTenant] = useState('default')
   const [accounts, setAccounts] = useState<Record<string, Account>>({})
   const [dsn, setDsn] = useState('')
+  const [readDsn, setReadDsn] = useState('')
   const [mode, setMode] = useState('prefix')
   const [dbService, setDbService] = useState('')
   const [dbName, setDbName] = useState('')
+  const [dbTemplate, setDbTemplate] = useState('postgres')
+  const [perRun, setPerRun] = useState(false)
   const [initScript, setInitScript] = useState('')
+  const [startCommand, setStartCommand] = useState('')
+  const [stopCommand, setStopCommand] = useState('')
+  const [migrateCommand, setMigrateCommand] = useState('')
+  const [seedCommand, setSeedCommand] = useState('')
+  const [accountCommand, setAccountCommand] = useState('')
+  const [cleanupCommand, setCleanupCommand] = useState('')
+  const [allowExecute, setAllowExecute] = useState(false)
+  const [waitSeconds, setWaitSeconds] = useState('30')
+  const [accountCheck, setAccountCheck] = useState<Record<string, any> | null>(null)
   const [allowedHosts, setAllowedHosts] = useState('')
   const [riskWhitelist, setRiskWhitelist] = useState('')
   const [healthUrl, setHealthUrl] = useState('')
@@ -100,6 +112,23 @@ export default function ProjectSettings() {
     )
   }
 
+  async function validateAccounts() {
+    setBusy(true)
+    try {
+      const result = await api.post<Record<string, any>>(`/projects/${project!.id}/accounts/validate`, {})
+      setAccountCheck(result)
+      if (result.failed) {
+        toast.error('账号预检有失败项', `失败 ${result.failed} 个，查看下方明细`)
+      } else {
+        toast.success('账号预检完成', `检查 ${result.total} 个，跳过 ${result.skipped} 个`)
+      }
+    } catch (error) {
+      toast.error('账号预检失败', String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function save() {
     setBusy(true)
     try {
@@ -110,11 +139,14 @@ export default function ProjectSettings() {
         tenant: tenant.trim() || 'default',
         test_accounts: accounts,
         target_dsn: dsn || undefined,
+        target_read_dsn: readDsn || undefined,
         isolation: {
           ...(project!.isolation ?? {}),
           mode,
           db_service: dbService,
           db_name: dbName,
+          db_template: dbTemplate || 'postgres',
+          per_run: perRun,
           init_script: initScript,
           allowed_hosts: allowedHosts.split('\n').map((item) => item.trim()).filter(Boolean),
         },
@@ -122,6 +154,14 @@ export default function ProjectSettings() {
           ...(project!.target_start ?? {}),
           type: targetType,
           health_url: healthUrl,
+          allow_execute: allowExecute,
+          start_command: startCommand,
+          stop_command: stopCommand,
+          migrate_command: migrateCommand,
+          seed_command: seedCommand,
+          account_command: accountCommand,
+          cleanup_command: cleanupCommand,
+          wait_seconds: Number(waitSeconds) || 30,
         },
         settings: {
           ...(project!.settings ?? {}),
@@ -411,13 +451,24 @@ export default function ProjectSettings() {
               </div>
             ))}
           </div>
-          <Button
-            size="sm"
-            icon="plus"
-            onClick={() => setAccounts((prev) => ({ ...prev, [nextAccountName(prev)]: { username: '', password: '' } }))}
-          >
-            添加账号
-          </Button>
+          <div className="row-actions">
+            <Button
+              size="sm"
+              icon="plus"
+              onClick={() => setAccounts((prev) => ({ ...prev, [nextAccountName(prev)]: { username: '', password: '' } }))}
+            >
+              添加账号
+            </Button>
+            <Button size="sm" icon="shield" loading={busy} onClick={validateAccounts}>预检账号</Button>
+          </div>
+          {accountCheck && (
+            <div className="muted small" style={{ marginTop: 8 }}>
+              共 {accountCheck.total} 个 · 通过 {accountCheck.ok} · 失败 {accountCheck.failed} · 跳过 {accountCheck.skipped}
+              {Array.isArray(accountCheck.items) && accountCheck.items.filter((item: any) => item.ok === false).map((item: any) => (
+                <div key={item.name} className="text-danger">· {item.name}: {item.detail}</div>
+              ))}
+            </div>
+          )}
         </Card>
 
         <Card title="被测数据库" subtitle="用于「数据库状态断言」和按项目隔离的数据准备。">
@@ -429,6 +480,15 @@ export default function ProjectSettings() {
                 value={dsn}
                 onChange={(event) => setDsn(event.target.value)}
                 placeholder={project.target_dsn_configured ? '已保存（留空不修改）' : 'postgresql://user@host:5432/db'}
+              />
+            </Field>
+            <Field label="只读 DSN" hint="数据库断言优先使用；未配置时回退到上面的 DSN。建议用只读账号。">
+              <input
+                className="input mono"
+                type="password"
+                value={readDsn}
+                onChange={(event) => setReadDsn(event.target.value)}
+                placeholder={project.target_read_dsn_configured ? '已保存（留空不修改）' : 'postgresql://readonly@host:5432/db'}
               />
             </Field>
             <Field label="隔离模式">
@@ -444,6 +504,17 @@ export default function ProjectSettings() {
               </Field>
               <Field label="库名">
                 <input className="input mono" value={dbName} onChange={(event) => setDbName(event.target.value)} placeholder="app" />
+              </Field>
+            </div>
+            <div className="form-row">
+              <Field label="数据库模板">
+                <input className="input mono" value={dbTemplate} onChange={(event) => setDbTemplate(event.target.value)} placeholder="postgres" />
+              </Field>
+              <Field label="每次 run 独立服务" hint="reset 模式下用 {服务名}-{run_id} 创建独立库；外部 SUT 需要自行指向该 DSN。">
+                <label className="row-actions">
+                  <input type="checkbox" checked={perRun} onChange={(event) => setPerRun(event.target.checked)} />
+                  启用 per-run 数据库
+                </label>
               </Field>
             </div>
             <Field label="初始化脚本">
@@ -466,6 +537,27 @@ export default function ProjectSettings() {
             </Field>
             <Field label="健康检查地址">
               <input className="input mono" value={healthUrl} onChange={(event) => setHealthUrl(event.target.value)} placeholder="/api/health" />
+            </Field>
+            <Field label="允许执行准备命令" hint="还需要在无人值守设置里开启 allow_target_commands；命令默认进沙箱，宿主执行需额外显式开启。">
+              <label className="row-actions">
+                <input type="checkbox" checked={allowExecute} onChange={(event) => setAllowExecute(event.target.checked)} />
+                allow_execute
+              </label>
+            </Field>
+            <div className="form-row">
+              <Field label="启动命令"><input className="input mono" value={startCommand} onChange={(event) => setStartCommand(event.target.value)} placeholder="./scripts/dev-up.sh" /></Field>
+              <Field label="停止命令"><input className="input mono" value={stopCommand} onChange={(event) => setStopCommand(event.target.value)} placeholder="./scripts/dev-down.sh" /></Field>
+            </div>
+            <div className="form-row">
+              <Field label="迁移命令"><input className="input mono" value={migrateCommand} onChange={(event) => setMigrateCommand(event.target.value)} placeholder="alembic upgrade head" /></Field>
+              <Field label="Seed 命令"><input className="input mono" value={seedCommand} onChange={(event) => setSeedCommand(event.target.value)} placeholder="python scripts/seed.py" /></Field>
+            </div>
+            <div className="form-row">
+              <Field label="账号准备命令"><input className="input mono" value={accountCommand} onChange={(event) => setAccountCommand(event.target.value)} placeholder="python scripts/create_test_users.py" /></Field>
+              <Field label="清理命令"><input className="input mono" value={cleanupCommand} onChange={(event) => setCleanupCommand(event.target.value)} placeholder="python scripts/cleanup_data.py" /></Field>
+            </div>
+            <Field label="就绪等待（秒）">
+              <input className="input mono" value={waitSeconds} onChange={(event) => setWaitSeconds(event.target.value)} />
             </Field>
             <Field label="高风险操作白名单" hint="每行一条，如 DELETE /api/test-data/*；白名单内启用时不再二次确认。">
               <textarea className="input code-input" rows={4} value={riskWhitelist} onChange={(event) => setRiskWhitelist(event.target.value)} />

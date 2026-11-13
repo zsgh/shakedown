@@ -119,8 +119,8 @@ queued → preparing（准备环境：按项目起独立被测库）
 
 | 层面 | 做法 |
 |---|---|
-| 被测库 | 每个项目一个 berth 服务名（`{项目}-db`），名字即身份 |
-| 测试数据 | 带 `{{run_id}}` 前缀；支持「整库重置」与「前缀 + 事后清理」两种模式 |
+| 被测库 | 每个项目一个 berth 服务名（`{项目}-db`）；`isolation.per_run` 时按 run 创建独立服务；只读 DSN 与读写 DSN 分离 |
+| 测试数据 | 数据集资产 + `{{data.*}}` 迭代；fixture setup/cleanup；`{{run_id}}` 前缀 + 显式清理；详见 [test-data.md](test-data.md) |
 | 凭据 | 项目测试账号加密存储（Fernet），只在运行时注入该项目的账号 |
 | 网络 | 白名单由 berth 侧策略保证（依赖 berth B2），平台侧只配置 `allowed_hosts` |
 | 代码 | Agent 产出的代码只在沙箱内执行 |

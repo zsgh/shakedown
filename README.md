@@ -272,6 +272,7 @@ cd frontend && npm run typecheck && npm run build
 | [docs/architecture.md](docs/architecture.md) | 组件、数据流、状态机、扩展点 |
 | [docs/case-schema.md](docs/case-schema.md) | 统一用例 JSON 格式（执行器唯一契约） |
 | [docs/usage.md](docs/usage.md) | 上手操作手册（从建项目到看报告） |
+| [docs/test-data.md](docs/test-data.md) | 测试数据资产、fixture、数据驱动、文件与数据库准备 |
 | [docs/redesign.md](docs/redesign.md) | UI / 功能重做方案与落地记录 |
 | [docs/backtest.md](docs/backtest.md) | 有效性验证（回测）怎么跑、指标怎么算 |
 | [docs/berth.md](docs/berth.md) | 与 berth 的接口约定与依赖清单（B1–B12） |

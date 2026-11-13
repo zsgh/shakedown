@@ -27,6 +27,19 @@ _PATH_PARAM = re.compile(r"\{[^}/]+\}")
 _DROP = object()
 
 
+def _iter_spec_steps(spec: dict[str, Any]):
+    """遍历 steps / cleanup / fixtures 内嵌步骤，供归一化与占位符替换复用。"""
+    for step in list(spec.get("steps") or []) + list(spec.get("cleanup") or []):
+        if isinstance(step, dict):
+            yield step
+    for fixture in spec.get("fixtures") or []:
+        if not isinstance(fixture, dict):
+            continue
+        for step in list(fixture.get("steps") or []) + list(fixture.get("cleanup") or []):
+            if isinstance(step, dict):
+                yield step
+
+
 def _path_template(path: str) -> str:
     """把 OpenAPI ``{project_id}`` 与用例 ``{{project_id}}`` 统一成同一形状。"""
     if not path:
@@ -388,9 +401,7 @@ def _replace_unresolved_path_variables(spec: dict[str, Any]) -> None:
     原样执行只会得到“未解析变量”错误，掩盖真正的参数校验断言。
     """
     available = {"run_id", "uuid", "timestamp", "project_id"}
-    for step in list(spec.get("steps") or []) + list(spec.get("cleanup") or []):
-        if not isinstance(step, dict):
-            continue
+    for step in _iter_spec_steps(spec):
         path = str(step.get("path") or "")
         for name in sorted(set(_PLACEHOLDER.findall(path))):
             if name not in available and (name.endswith("_id") or name in {"other_project_id", "empty_project_id"}):
@@ -451,8 +462,8 @@ def normalize_spec(
     """
     _replace_unresolved_path_variables(spec)
     _enable_fixture_cases_used_by_runs(spec)
-    for step in list(spec.get("steps") or []) + list(spec.get("cleanup") or []):
-        if not isinstance(step, dict) or step.get("action") != "request":
+    for step in _iter_spec_steps(spec):
+        if step.get("action") != "request":
             continue
         early_path = str(step.get("path") or "")
         for assertion in step.get("assert") or []:

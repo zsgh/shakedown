@@ -26,6 +26,7 @@ export interface Project extends ProjectSummary {
   isolation: Record<string, any>
   test_accounts: Record<string, any>
   target_dsn_configured: boolean
+  target_read_dsn_configured?: boolean
   settings: Record<string, any>
   created_at: string
   updated_at: string
@@ -901,4 +902,54 @@ export interface SpecCompare {
   }
   affected_cases: Array<{ id: number; title: string; status: string }>
   affected_total: number
+}
+
+
+export interface TestDataRow {
+  id: number
+  row_index: number
+  data: Record<string, any>
+}
+
+export interface TestDataset {
+  id: number
+  project_id: number
+  name: string
+  description: string
+  kind: string
+  schema: Record<string, any>
+  seed: number
+  version: number
+  status: string
+  row_count: number
+  pii_fields: string[]
+  rows: TestDataRow[]
+  meta?: Record<string, any>
+  created_at: string
+  updated_at: string
+}
+
+export interface TestFile {
+  id: number
+  project_id: number
+  name: string
+  filename: string
+  content_type: string
+  size: number
+  sha256: string
+  created_at: string
+}
+
+export interface TestDataHealth {
+  project_id: number
+  dataset_count: number
+  row_count: number
+  binding_count: number
+  file_count: number
+  datasets_without_rows: number
+  cases_without_data: number
+  orphan_rows: number
+  orphan_files?: number
+  stale_bindings?: number
+  pii_dataset_count: number
 }

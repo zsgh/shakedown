@@ -30,7 +30,8 @@ from app.enums import (
 )
 from app.exceptions import record_exception
 from app.spec_repair import repair_case_spec
-from app.executor.environment import cleanup_environment, prepare_environment
+from app.environment_manager import prepare_data
+from app.executor.environment import cleanup_environment, prepare_environment, project_read_dsn
 from app.executor.normalizer import load_endpoint_schemas
 from app.executor.runner import build_curl, persist_results, run_cases_in_sandbox, select_cases
 from app.fixes import (
@@ -42,6 +43,7 @@ from app.fixes import (
 )
 from app.logging import get_logger
 from app.models import CaseResult, Feature, Finding, KnowledgeSource, Project, Run, Task, TestCase
+from app.test_data_service import file_blobs_for_specs, load_case_data
 from app.verification_evidence import record_replay_evidence
 from app.worker.queue import enqueue, has_active_task, heartbeat
 
@@ -584,10 +586,66 @@ def handle_execute_run(session: Session, payload: dict[str, Any]) -> dict[str, A
         run.started_at = run.started_at or _utcnow()
         session.commit()
         env = prepare_environment(session, project, run)
-        run.env_snapshot = {**(run.env_snapshot or {}), **env.as_dict(), "base_url": env.base_url}
+        data_preparation = prepare_data(project, dsn=env.target_dsn)
+        data_summary = {
+            "prepared": data_preparation.get("prepared"),
+            "reason": data_preparation.get("reason", ""),
+            "command_execution": data_preparation.get("command_execution", ""),
+            "steps": [
+                {
+                    "name": step.get("name"),
+                    "ok": step.get("ok"),
+                    "error": step.get("error"),
+                    "execution": step.get("execution"),
+                    "sandboxed": step.get("sandboxed"),
+                    "duration_ms": step.get("duration_ms"),
+                }
+                for step in data_preparation.get("steps") or []
+                if isinstance(step, dict)
+            ],
+        }
+        account_preflight: dict[str, Any] = {}
+        if (project.settings_json or {}).get("account_preflight"):
+            from app.account_service import preflight_accounts
+
+            account_preflight = preflight_accounts(project, env.accounts)
+            if account_preflight.get("failed"):
+                env.notes.append(f"账号预检失败：{account_preflight['failed']} 个")
+        if data_preparation.get("steps"):
+            env.notes.append(
+                "数据准备："
+                + ("成功" if data_preparation.get("prepared") else "失败")
+                + f"（{len(data_preparation['steps'])} 步）"
+            )
+        run.env_snapshot = {
+            **(run.env_snapshot or {}),
+            **env.as_dict(),
+            "base_url": env.base_url,
+            "data_preparation": data_summary,
+            "account_preflight": account_preflight,
+        }
         run.berth_task_id = env.berth_task_id or run.berth_task_id
         session.commit()
-        checkpoint = {"env": env.as_dict(), "dsn": env.target_dsn, "accounts": env.accounts}
+        checkpoint = {
+            "env": env.as_dict(),
+            "dsn": env.target_dsn,
+            "accounts": env.accounts,
+            "data_preparation": data_preparation,
+        }
+        if data_preparation.get("steps") and not data_preparation.get("prepared"):
+            failed = next(
+                (step for step in data_preparation.get("steps") or [] if not step.get("ok")),
+                {},
+            )
+            run.status = RunStatus.FAILED.value
+            run.error = "数据准备失败：" + str(failed.get("name") or "unknown") + " " + str(
+                failed.get("error") or ""
+            )
+            run.finished_at = _utcnow()
+            run.stats = {"error": run.error, "data_preparation": data_summary}
+            session.commit()
+            cleanup_environment(project, env)
+            return {"run_id": run.id, "error": run.error, "data_preparation": data_preparation}
     else:
         from app.executor.environment import Environment
 
@@ -595,8 +653,10 @@ def handle_execute_run(session: Session, payload: dict[str, Any]) -> dict[str, A
         env = Environment(
             base_url=snapshot.get("base_url", ""),
             target_dsn=snapshot.get("dsn", "") or (run.env_snapshot or {}).get("target_dsn", ""),
+            read_dsn=project_read_dsn(project),
             accounts=snapshot.get("accounts", {}) or {},
             db_service=snapshot.get("db_service", ""),
+            db_service_created=bool(snapshot.get("db_service_created")),
         )
 
     # ── 2. 执行 ──────────────────────────────────────────
@@ -611,6 +671,8 @@ def handle_execute_run(session: Session, payload: dict[str, Any]) -> dict[str, A
             session.commit()
             return {"executed": 0}
         endpoint_schemas = load_endpoint_schemas(session, project.id)
+        data_by_case = load_case_data(session, cases)
+        file_blobs = file_blobs_for_specs(session, project, [case.spec or {} for case in cases])
 
         def should_cancel() -> bool:
             from app.db import SessionLocal
@@ -628,6 +690,8 @@ def handle_execute_run(session: Session, payload: dict[str, Any]) -> dict[str, A
             sandbox_mode=settings.sandbox_mode,
             endpoint_schemas=endpoint_schemas,
             should_cancel=should_cancel,
+            data_by_case=data_by_case,
+            file_blobs=file_blobs,
         )
         rows = persist_results(session, project, run, cases, outcome)
         session.commit()
@@ -737,6 +801,8 @@ def _rerun_failures(
         attempt=1,
         endpoint_schemas=endpoint_schemas,
         should_cancel=should_cancel,
+        data_by_case=load_case_data(session, failing),
+        file_blobs=file_blobs_for_specs(session, project, [case.spec or {} for case in failing]),
     )
     rows = persist_results(session, project, run, failing, outcome, rerun=True)
     flaky: list[int] = []

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import agent, automation, cases, exceptions, findings, gaps, health, knowledge, mcp, members, metrics, projects, push, quality, reports, review, runs, schedules, security, settings, sla, visual
+from app.api import agent, automation, cases, exceptions, findings, gaps, health, knowledge, mcp, members, metrics, projects, push, quality, reports, review, runs, schedules, security, settings, sla, test_data, visual
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(health.router)
@@ -27,6 +27,7 @@ api_router.include_router(agent.router)
 api_router.include_router(reports.router)
 api_router.include_router(settings.router)
 api_router.include_router(security.router)
+api_router.include_router(test_data.router)
 api_router.include_router(mcp.router)
 
 __all__ = ["api_router"]

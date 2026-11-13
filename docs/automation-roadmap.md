@@ -29,10 +29,10 @@
 
 | ID | 模块 | 内容 | 状态 |
 |---|---|---|---|
-| C1 | 环境管理 | 启动/停止 SUT、DB migration/seed、账号准备、清理；默认沙箱执行，宿主执行需显式 opt-in | 已完成（命令执行受策略限制） |
+| C1 | 环境管理 | 启动/停止 SUT、DB migration/seed、账号准备、清理；默认沙箱执行，宿主执行需显式 opt-in | 已完成（命令执行受策略限制；每次 run 执行 migrate/seed/account/init_script） |
 | C2 | 执行伸缩 | 多 worker、并发/配额、超时、取消、artifact 保留 | 已完成（含 retention API） |
 | C3 | 非 API 验证 | 进程/产物/权限/浏览器沙箱重放、artifact hash；项目命令默认进沙箱 | 已完成（基础版；local 沙箱无隔离，默认拒绝命令） |
-| C4 | 测试数据 | 业务语义、分布、隔离、清理、PII | 已完成（基础版） |
+| C4 | 测试数据 | 业务语义、分布、隔离、清理、PII | 已完成（数据集资产 + fixture + 数据驱动 + 文件；详见 `test-data.md`） |
 | C5 | 性能分层 | baseline / load / stress / soak、并发阶梯、资源 / FD / 线程增长、SLO 退化检测 | 已完成（资源检查已接入） |
 | C6 | UI / 可访问性 | 视觉回归、a11y、探索式 UI | 已完成（视觉基线/a11y/探索式 API + 自动化控制台；探索式 UI 走 exploratory API） |
 

@@ -98,6 +98,12 @@ STEP_SCHEMA: dict[str, Any] = {
         "browser": {"type": "object"},
         "sql": {"type": "string"},
         "params": {"type": "object"},
+        "readonly": {"type": "boolean", "description": "db 步骤/断言使用只读 DSN"},
+        "files": {
+            "type": "object",
+            "description": "multipart 文件：字段名 -> {file_id} / {filename, content} / {path}",
+            "additionalProperties": True,
+        },
         "seconds": {"type": "number"},
         "save": {"type": "object", "description": "{变量名: $.json.path}"},
         "parallel": {
@@ -109,6 +115,37 @@ STEP_SCHEMA: dict[str, Any] = {
             },
         },
         "assert": {"type": "array", "items": ASSERTION_SCHEMA},
+    },
+    "additionalProperties": True,
+}
+
+FIXTURE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["kind"],
+    "properties": {
+        "kind": {
+            "type": "string",
+            "enum": ["api", "steps", "request", "sql", "db", "file", "command", "cli", "dataset", "http_login", "manual", "none"],
+        },
+        "name": {"type": "string"},
+        "required": {"type": "boolean", "default": False},
+        "steps": {"type": "array", "items": STEP_SCHEMA},
+        "sql": {"type": "string"},
+        "params": {"type": "object"},
+        "readonly": {"type": "boolean"},
+        "save": {"type": "object"},
+        "file_id": {"type": "integer"},
+        "filename": {"type": "string"},
+        "content": {},
+        "content_type": {"type": "string"},
+        "path": {"type": "string"},
+        "save_as": {"type": "string"},
+        "command": {},
+        "cwd": {"type": "string"},
+        "env": {"type": "object"},
+        "row": {"type": "object"},
+        "cleanup": {"type": "array", "items": STEP_SCHEMA},
+        "note": {"type": "string"},
     },
     "additionalProperties": True,
 }
@@ -143,6 +180,7 @@ CASE_SCHEMA: dict[str, Any] = {
             },
         },
         "variables": {"type": "object"},
+        "fixtures": {"type": "array", "items": FIXTURE_SCHEMA},
         "steps": {"type": "array", "items": STEP_SCHEMA},
         "assertions": {"type": "array", "items": ASSERTION_SCHEMA},
         "cleanup": {"type": "array", "items": STEP_SCHEMA},
@@ -227,6 +265,7 @@ class TestCaseSpec(BaseModel):
     feature: dict[str, Any] = Field(default_factory=dict)
     description: str = ""
     preconditions: list[Precondition] = Field(default_factory=list)
+    fixtures: list[dict[str, Any]] = Field(default_factory=list)
     variables: dict[str, Any] = Field(default_factory=dict)
     steps: list[Step] = Field(default_factory=list)
     assertions: list[Assertion] = Field(default_factory=list)

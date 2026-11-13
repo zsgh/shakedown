@@ -284,6 +284,8 @@ POST /api/projects/{id}/artifacts/verify
 
 ## 12. 测试数据
 
+> 数据集资产、fixture、`{{data.*}}`、文件上传、只读 DSN、每次 run 的 seed 与账号预检见 [test-data.md](test-data.md)。
+
 ```http
 POST /api/projects/{id}/test-data/generate
 {

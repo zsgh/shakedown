@@ -56,6 +56,16 @@ from app.schemas.mcp import McpClientCreate, McpClientCreated, McpClientOut
 from app.schemas.member import ProjectMemberCreate, ProjectMemberOut, ProjectMemberUpdate
 from app.schemas.schedule import ProjectScheduleCreate, ProjectScheduleOut, ProjectScheduleUpdate, RunPolicy
 from app.schemas.visual import VisualBaselineCompare, VisualBaselineCreate, VisualBaselineOut
+from app.schemas.test_data import (
+    CaseDataBindingCreate,
+    CaseDataBindingOut,
+    TestDataHealthOut,
+    TestDataRowOut,
+    TestDatasetCreate,
+    TestDatasetOut,
+    TestDatasetUpdate,
+    TestFileOut,
+)
 from app.schemas.knowledge import (
     ChunkOut,
     ConsistencyReport,
@@ -106,6 +116,8 @@ __all__ = [
     "CaseStatusUpdate",
     "CaseVerificationCreate",
     "CaseVerificationOut",
+    "CaseDataBindingCreate",
+    "CaseDataBindingOut",
     "ChunkOut",
     "ConsistencyReport",
     "EndpointMerge",
@@ -155,4 +167,10 @@ __all__ = [
     "TestCaseCreate",
     "TestCaseOut",
     "TestCaseUpdate",
+    "TestDataHealthOut",
+    "TestDataRowOut",
+    "TestDatasetCreate",
+    "TestDatasetOut",
+    "TestDatasetUpdate",
+    "TestFileOut",
 ]

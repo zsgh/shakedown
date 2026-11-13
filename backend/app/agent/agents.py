@@ -2185,12 +2185,12 @@ _CASE_SYSTEM_PROMPT = """你是资深测试设计工程师，负责为「{dimens
 4. 性能维度只做接口级响应时间基线，阈值必须来自文档或项目配置中的 SLA；没有 SLA 就不要生成 timing 断言，把「缺少 SLA」写进 contract_questions（owner_kind=test-side），不要硬编阈值；带 timing 断言的请求步骤必须设置 samples（context.performance_samples，默认 20），执行器会按多次采样计算 P95；
 5. 每条断言都必须有可引用依据：openapi / doc / code 写 ref；通用策略（不得 5xx、不得泄露堆栈/SQL）用 source_type=policy + ref=POLICY-ID；人工假设用 manual，并必须在 note 写作者与理由。**没有依据就不要写断言**；
 6. 没有依据但确实需要确认的期望，写进 `contract_questions`：它没有 expected，不进入执行链、不计入待确认断言、不会被判失败。形状为 {{"question": "请确认……", "missing_contract": "缺少哪部分契约", "owner_kind": "sut-contract|test-side|environment"}}。只有连可执行步骤都无法构造（缺接口、必填参数、账号或环境）时才输出 missing_input，并让 steps 为空；
-7. steps 里的字段用 {{{{字段名}}}} 占位，实际值由执行器按 run_id 生成；
+7. 用例可以绑定测试数据集：用 {{{{data.字段名}}}} 引用当前行；未绑定数据集时用 {{{{run_id}}}} / {{{{uuid}}}} / {{{{timestamp}}}} 生成唯一值。不要写未定义的 {{{{字段名}}}}——执行器只认 run_id / uuid / timestamp / save 变量 / data.* / account.*，其它占位符会报未解析变量；
 8. 断言写在它要校验的那一步的 assert 数组里（这样能绑定该步骤的响应）；
    顶层 assertions 只用于跨步骤 / 用例级断言，通常留空；
    断言里的 expected / target 也支持 {{{{run_id}}}} / {{{{save 的变量}}}}，执行时统一渲染；
 9. 创建或修改数据的用例，用 save 保存关键标识，并在 cleanup 里删除 / 还原测试数据
-   （cleanup 在用例失败时也会执行；不要只依赖 run_id 前缀，否则数据会越积越多）。
+   （cleanup 在用例失败时也会执行；不要只依赖 run_id 前缀，否则数据会越积越多）。需要可复用前置数据时用 fixtures: [{{"kind":"api|sql|file|command","name":"...","steps"/"sql"/"file_id":...,"cleanup":[...]}}]；fixture 失败用例直接 error，不会继续跑 steps。
 10. 必须严格遵守 endpoints[].request_schema 和 param_schema：
     integer 字段不要写 "P1" / "2" 这类字符串，object 字段不要写成字符串，
     array 字段不要写成对象；required 字段必须提供，enum 字段只能使用枚举值。
@@ -2214,6 +2214,7 @@ _CASE_SYSTEM_PROMPT = """你是资深测试设计工程师，负责为「{dimens
     断言 evidence 写 {{"source_type": "code", "ref": "file.go:74", "quote": "代码里的关键行"}}。
     代码里也看不出来的才写 contract_questions，不要凭空猜。
 18. 需要登录 / 鉴权的步骤必须引用项目账号：auth: {{"account": "<账号名>", "mode": "bearer|basic|private_token"}}；
+    文件上传步骤用 files: {{"字段名": {{"file_id": 1}}}}（file_id 来自项目测试文件），不要在 body 里塞 base64。
     context.accounts 是可用账号名（不含密码）。不要写死 token / password / {{{{admin_token}}}}；
     没有可用账号时把「缺少测试账号」写进 missing_input，不要发字面量占位符。
 

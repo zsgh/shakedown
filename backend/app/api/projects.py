@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -42,6 +42,7 @@ def _to_out(project: Project) -> ProjectOut:
         isolation=project.isolation or {},
         test_accounts=_mask_accounts(decrypt_json(project.test_accounts_encrypted) or {}),
         target_dsn_configured=bool(project.target_dsn_encrypted),
+        target_read_dsn_configured=bool(project.target_read_dsn_encrypted),
         settings=project.settings_json or {},
         created_at=project.created_at,
         updated_at=project.updated_at,
@@ -132,6 +133,7 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
         isolation=payload.isolation.model_dump(),
         test_accounts_encrypted=encrypt_json(payload.test_accounts) if payload.test_accounts else None,
         target_dsn_encrypted=encrypt(payload.target_dsn) if payload.target_dsn else None,
+        target_read_dsn_encrypted=encrypt(payload.target_read_dsn) if payload.target_read_dsn else None,
         settings_json=payload.settings,
     )
     db.add(project)
@@ -156,6 +158,22 @@ def list_project_accounts(project_id: int, db: Session = Depends(get_db)) -> dic
             for name, value in masked.items()
         ],
     }
+
+
+@router.post("/{project_id}/accounts/validate")
+def validate_project_accounts(
+    project_id: int,
+    payload: dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """预检账号：token 是否有效 / 用户名密码能否登录，不修改任何账号。"""
+    project = db.get(Project, project_id)
+    if project is None:
+        raise NotFoundError(f"项目不存在：{project_id}")
+    from app.account_service import preflight_accounts
+
+    names = payload.get("names") if isinstance(payload, dict) else None
+    return preflight_accounts(project, names=names if isinstance(names, list) else None)
 
 
 @router.post("/{project_id}/onboarding")
@@ -213,6 +231,10 @@ def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depend
         project.test_accounts_encrypted = encrypt_json(accounts) if accounts else None
     if "target_dsn" in data and data["target_dsn"] is not None:
         project.target_dsn_encrypted = encrypt(data["target_dsn"]) if data["target_dsn"] else None
+    if "target_read_dsn" in data and data["target_read_dsn"] is not None:
+        project.target_read_dsn_encrypted = (
+            encrypt(data["target_read_dsn"]) if data["target_read_dsn"] else None
+        )
     for key in ("name", "description", "tenant", "base_url"):
         if key in data and data[key] is not None:
             setattr(project, key, data[key])
@@ -229,6 +251,9 @@ def delete_project(project_id: int, db: Session = Depends(get_db)) -> None:
     project = db.get(Project, project_id)
     if project is None:
         raise NotFoundError(f"项目不存在：{project_id}")
+    from app.test_data_service import delete_project_files
+
+    delete_project_files(project)
     db.delete(project)
     db.commit()
 

@@ -16,6 +16,7 @@ const NAV: Array<{ path: string; label: string; icon: IconName; badge?: 'review'
   { path: 'runs', label: '执行', icon: 'play' },
   { path: 'findings', label: '缺陷', icon: 'bug', badge: 'findings' },
   { path: 'knowledge', label: '理解', icon: 'book' },
+  { path: 'test-data', label: '测试数据', icon: 'file' },
   { path: 'activity', label: 'Agent 活动', icon: 'activity' },
   { path: 'automation', label: '无人值守', icon: 'zap' },
 ]
@@ -26,6 +27,7 @@ const TITLES: Record<string, string> = {
   runs: '执行',
   findings: '缺陷',
   knowledge: '理解',
+  'test-data': '测试数据',
   activity: 'Agent 活动',
   automation: '无人值守',
   settings: '项目设置',

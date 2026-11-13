@@ -57,8 +57,10 @@ class Project(Base, TimestampMixin):
     isolation: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     # 加密存储：{"username": "...", "password": "...", "token": "..."}
     test_accounts_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # 加密存储：被测库 DSN（用于数据库状态断言）
+    # 加密存储：被测库 DSN（用于数据库状态断言 / 数据准备）
     target_dsn_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # 加密存储：只读 DSN（数据库断言优先使用；未配置时回退 target_dsn）
+    target_read_dsn_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # 其它项目级配置（超时、SLA 等）
     settings_json: Mapped[dict[str, Any]] = mapped_column("settings", JSONB, default=dict)
 
@@ -251,6 +253,98 @@ class TestCase(Base, TimestampMixin):
     project: Mapped[Project] = relationship(back_populates="test_cases")
 
     __table_args__ = (Index("ix_test_cases_project_status", "project_id", "status"),)
+
+
+class TestDataset(Base, TimestampMixin):
+    """可复用的测试数据资产（数据模板 + 生成参数 + 版本）。"""
+
+    __tablename__ = "test_datasets"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # generated=按 fields 生成；schema=从 endpoint request_body 生成；manual=手工行
+    kind: Mapped[str] = mapped_column(String(24), default="generated", nullable=False)
+    # {"fields": [...], "constraints": {...}, "locale": "zh_CN", "negative": false}
+    schema_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    seed: Mapped[int] = mapped_column(Integer, default=42, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="active", nullable=False, index=True)
+    # 生成器 / 导入来源 / PII 策略等
+    meta_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+    rows: Mapped[list["TestDataRow"]] = relationship(
+        back_populates="dataset", cascade="all, delete-orphan", order_by="TestDataRow.row_index"
+    )
+    bindings: Mapped[list["CaseDataBinding"]] = relationship(
+        back_populates="dataset", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uq_test_datasets_project_name"),
+        Index("ix_test_datasets_project_status", "project_id", "status"),
+    )
+
+
+class TestDataRow(Base, TimestampMixin):
+    """数据集中的一行；保留在平台库，执行时渲染到用例变量。"""
+
+    __tablename__ = "test_data_rows"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("test_datasets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    row_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+    dataset: Mapped[TestDataset] = relationship(back_populates="rows")
+
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "row_index", name="uq_test_data_rows_dataset_index"),
+        Index("ix_test_data_rows_dataset_index", "dataset_id", "row_index"),
+    )
+
+
+class CaseDataBinding(Base, TimestampMixin):
+    """用例与数据集的绑定；mode=iterate 时同一用例按行迭代执行。"""
+
+    __tablename__ = "case_data_bindings"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("test_cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("test_datasets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    mode: Mapped[str] = mapped_column(String(16), default="single", nullable=False)
+    row_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    overrides: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    dataset: Mapped[TestDataset] = relationship(back_populates="bindings")
+
+    __table_args__ = (
+        UniqueConstraint("case_id", "dataset_id", name="uq_case_data_bindings_case_dataset"),
+    )
+
+
+class TestFile(Base, TimestampMixin):
+    """项目级测试文件（multipart / 浏览器上传使用）。"""
+
+    __tablename__ = "test_files"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    filename: Mapped[str] = mapped_column(String(300), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(200), default="application/octet-stream", nullable=False)
+    size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    storage_path: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    meta_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uq_test_files_project_name"),
+    )
 
 
 class CaseVerification(Base, TimestampMixin):

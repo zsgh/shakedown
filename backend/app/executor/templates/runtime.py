@@ -28,7 +28,9 @@ import httpx
 RESULTS_DIR = os.environ.get("SHAKEDOWN_RESULTS_DIR", "results")
 BASE_URL = os.environ.get("SHAKEDOWN_BASE_URL", "http://127.0.0.1:8000")
 TARGET_DSN = os.environ.get("SHAKEDOWN_TARGET_DSN", "")
+READ_DSN = os.environ.get("SHAKEDOWN_READ_DSN", "") or TARGET_DSN
 ACCOUNTS = json.loads(os.environ.get("SHAKEDOWN_ACCOUNTS", "{}") or "{}")
+PROFILE = json.loads(os.environ.get("SHAKEDOWN_PROFILE", "{}") or "{}")
 
 # 结果会被落库、进报告、贴进缺陷复现命令：账号口令 / 令牌绝不能原样留下。
 _SECRET_VALUES = sorted(
@@ -109,6 +111,7 @@ def _bounded_request(
     json_body: Any,
     data: Any = None,
     content: Any = None,
+    files: Any = None,
     timeout: float = 30.0,
 ) -> _BoundedResponse:
     """发请求并限制读取时长 / 字节数。
@@ -119,7 +122,15 @@ def _bounded_request(
     """
     started = time.time()
     with client.stream(
-        method, url, headers=headers, params=params, json=json_body, data=data, content=content, timeout=timeout
+        method,
+        url,
+        headers=headers,
+        params=params,
+        json=json_body,
+        data=data,
+        content=content,
+        files=files,
+        timeout=timeout,
     ) as response:
         content_type = str(response.headers.get("content-type", "")).lower()
         streaming = "text/event-stream" in content_type or "application/x-ndjson" in content_type
@@ -186,6 +197,12 @@ class CaseContext:
         self.last_command: dict[str, Any] | None = None
         # 所有命令步骤的完整结果：归因要靠它判断「断言查错了输出流」。
         self.commands: list[dict[str, Any]] = []
+        # 数据集 / 项目文件：由平台在编译时注入。
+        self.file_blobs: dict[str, Any] = case.get("__file_blobs") or {}
+        self.fixture_cleanups: list[dict[str, Any]] = []
+        self.fixture_errors: list[str] = []
+        self.fixture_assertions: list[dict[str, Any]] = []
+        self.data_index: int | None = None
 
     def _account_value(self, key: str) -> Any:
         parts = key.split(".")
@@ -194,6 +211,18 @@ class CaseContext:
         account = ACCOUNTS.get(parts[1], {})
         field = parts[2] if len(parts) >= 3 else "username"
         return account.get(field, "")
+
+    def _data_value(self, key: str) -> Any:
+        parts = key.split(".")[1:]
+        current: Any = self.variables.get("data")
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+                current = current[int(part)]
+            else:
+                return None
+        return current
 
     # ── 变量渲染 ─────────────────────────────────────────
     def render(self, value: Any) -> Any:
@@ -208,6 +237,8 @@ class CaseContext:
                     return self.variables[key]
                 if key.startswith("account."):
                     return self._account_value(key)
+                if key.startswith("data."):
+                    return self._data_value(key)
 
             def repl(match: re.Match[str]) -> str:
                 key = match.group(1)
@@ -215,6 +246,8 @@ class CaseContext:
                     return str(self.variables[key])
                 if key.startswith("account."):
                     return str(self._account_value(key))
+                if key.startswith("data."):
+                    return str(self._data_value(key))
                 return match.group(0)
 
             return _PLACEHOLDER.sub(repl, value)
@@ -341,12 +374,13 @@ def _compare(operator: str, actual: Any, expected: Any) -> bool:
     return False
 
 
-def _db_fetch(sql: str, params: list[Any]) -> list[tuple[Any, ...]]:
-    if not TARGET_DSN:
+def _db_fetch(sql: str, params: list[Any], *, readonly: bool = False) -> list[tuple[Any, ...]]:
+    dsn = READ_DSN if readonly and READ_DSN else TARGET_DSN
+    if not dsn:
         raise RuntimeError("未配置被测库 DSN，无法执行数据库断言")
     import psycopg  # type: ignore
 
-    with psycopg.connect(TARGET_DSN) as conn:
+    with psycopg.connect(dsn) as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             if cur.description is None:
@@ -877,6 +911,115 @@ def _cookie_flags(value: str) -> str:
     return "<redacted>" + ("; " + "; ".join(flags) if flags else "")
 
 
+
+def _refresh_account_token(account_name: str, ctx: CaseContext) -> str:
+    """401 时尝试用账号密码重新登录 / 创建 token；失败返回空串。"""
+    account = ACCOUNTS.get(account_name)
+    if not isinstance(account, dict):
+        return ""
+    username = str(account.get("username") or "")
+    password = str(account.get("password") or "")
+    if not username or not password:
+        return ""
+    auth_profile = PROFILE.get("auth") if isinstance(PROFILE.get("auth"), dict) else {}
+    base = BASE_URL.rstrip("/")
+    login_path = str(auth_profile.get("login_path") or "")
+    if login_path:
+        url = base + (login_path if login_path.startswith("/") else "/" + login_path)
+        try:
+            ctx.client.post(
+                url,
+                data={
+                    str(auth_profile.get("user_field") or "username"): username,
+                    str(auth_profile.get("password_field") or "password"): password,
+                },
+                headers={"Origin": base, "Content-Type": "application/x-www-form-urlencoded"},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    token_endpoint = str(auth_profile.get("token_endpoint") or "")
+    if not token_endpoint:
+        return ""
+    url = base + (token_endpoint if token_endpoint.startswith("/") else "/" + token_endpoint)
+    try:
+        response = ctx.client.post(
+            url,
+            json={"name": "shakedown-runtime"},
+            headers={"Origin": base, "Content-Type": "application/json"},
+        )
+        payload = response.json() if response.content else {}
+    except Exception:  # noqa: BLE001
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    token = str(payload.get("token") or payload.get("value") or payload.get("access_token") or "")
+    if token:
+        account["token"] = token
+        global _SECRET_VALUES
+        _SECRET_VALUES = sorted({*_SECRET_VALUES, token}, key=len, reverse=True)
+    return token
+
+
+def _apply_account_token(headers: dict[str, str], token: str, mode: str) -> None:
+    if mode in {"private_token", "private-token", "gitlab"}:
+        headers.setdefault("PRIVATE-TOKEN", token)
+    else:
+        headers.setdefault("Authorization", f"Bearer {token}")
+
+
+def _file_spec(spec: Any, ctx: CaseContext) -> tuple[str, bytes, str]:
+    """把 ``files`` 里的引用解析成 (filename, content, content_type)。
+
+    支持三种写法：``{"file_id": 3}``（项目测试文件）、
+    ``{"filename": "x", "content": "..."}``（内联）、``{"path": "..."}``（fixture 生成）。
+    """
+    if isinstance(spec, str):
+        return "file.txt", spec.encode("utf-8"), "text/plain"
+    if not isinstance(spec, dict):
+        return "file.bin", b"", "application/octet-stream"
+    file_id = spec.get("file_id")
+    if file_id is not None:
+        blob = ctx.file_blobs.get(file_id) or ctx.file_blobs.get(str(file_id)) or {}
+        if not blob:
+            raise RuntimeError(f"测试文件不存在或未注入：{file_id}")
+        content = base64.b64decode(str(blob.get("content_b64") or ""))
+        return (
+            str(spec.get("filename") or blob.get("filename") or "file.bin"),
+            content,
+            str(spec.get("content_type") or blob.get("content_type") or "application/octet-stream"),
+        )
+    if spec.get("path"):
+        path = str(ctx.render(spec.get("path")))
+        with open(path, "rb") as handle:
+            content = handle.read()
+        return (
+            str(spec.get("filename") or os.path.basename(path)),
+            content,
+            str(spec.get("content_type") or "application/octet-stream"),
+        )
+    content = spec.get("content", "")
+    if isinstance(content, (dict, list)):
+        content = json.dumps(content, ensure_ascii=False)
+    return (
+        str(spec.get("filename") or "file.txt"),
+        str(content).encode("utf-8"),
+        str(spec.get("content_type") or "text/plain"),
+    )
+
+
+def _request_files(step: dict[str, Any], ctx: CaseContext) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    raw = step.get("files")
+    if not isinstance(raw, dict) or not raw:
+        return None, []
+    files: dict[str, Any] = {}
+    meta: list[dict[str, Any]] = []
+    for field, spec in raw.items():
+        filename, content, content_type = _file_spec(ctx.render(spec), ctx)
+        files[str(field)] = (filename, content, content_type)
+        meta.append({"field": str(field), "filename": filename, "size": len(content), "content_type": content_type})
+    return files, meta
+
+
 def _perform_request(step: dict[str, Any], ctx: CaseContext) -> dict[str, Any]:
     method = (step.get("method") or "GET").upper()
     if method in {"POST", "PUT", "PATCH", "DELETE"} and _uses_unsaved_default(step, ctx):
@@ -968,6 +1111,9 @@ def _perform_request(step: dict[str, Any], ctx: CaseContext) -> dict[str, Any]:
         temp_client = httpx.Client(timeout=REQUEST_TIMEOUT, follow_redirects=False)
     client = temp_client or ctx.client
     is_form = "application/x-www-form-urlencoded" in str(headers.get("Content-Type") or headers.get("content-type") or "").lower()
+    files_payload, files_meta = _request_files(step, ctx)
+    is_multipart = bool(files_payload)
+    auth_retried = False
     try:
         response = _bounded_request(
             client,
@@ -975,9 +1121,10 @@ def _perform_request(step: dict[str, Any], ctx: CaseContext) -> dict[str, Any]:
             url,
             headers=headers,
             params=params,
-            json_body=None if is_form else (body if isinstance(body, (dict, list)) else None),
-            data=body if is_form and isinstance(body, dict) else None,
-            content=body if isinstance(body, str) and not is_form else None,
+            json_body=None if (is_form or is_multipart) else (body if isinstance(body, (dict, list)) else None),
+            data=body if (is_form or is_multipart) and isinstance(body, dict) else None,
+            content=body if isinstance(body, str) and not is_form and not is_multipart else None,
+            files=files_payload,
             timeout=timeout,
         )
         # 生成器有时漏掉 /api 前缀；只在首请求 404 时尝试一次，
@@ -995,15 +1142,34 @@ def _perform_request(step: dict[str, Any], ctx: CaseContext) -> dict[str, Any]:
                 retry_url,
                 headers=headers,
                 params=params,
-                json_body=None if is_form else (body if isinstance(body, (dict, list)) else None),
-                data=body if is_form and isinstance(body, dict) else None,
-                content=body if isinstance(body, str) and not is_form else None,
+                json_body=None if (is_form or is_multipart) else (body if isinstance(body, (dict, list)) else None),
+                data=body if (is_form or is_multipart) and isinstance(body, dict) else None,
+                content=body if isinstance(body, str) and not is_form and not is_multipart else None,
+                files=files_payload,
                 timeout=timeout,
             )
             if retry.status_code != 404:
                 response = retry
                 path = retry_path
                 url = retry_url
+        # 静态 token 过期时，用账号密码刷新一次再重试；失败则保持原始 401。
+        if response.status_code == 401 and auth.get("account") and not auth_retried:
+            auth_retried = True
+            new_token = _refresh_account_token(str(auth["account"]), ctx)
+            if new_token:
+                _apply_account_token(headers, new_token, str(auth.get("mode") or ""))
+                response = _bounded_request(
+                    client,
+                    method,
+                    url,
+                    headers=headers,
+                    params=params,
+                    json_body=None if (is_form or is_multipart) else (body if isinstance(body, (dict, list)) else None),
+                    data=body if (is_form or is_multipart) and isinstance(body, dict) else None,
+                    content=body if isinstance(body, str) and not is_form and not is_multipart else None,
+                    files=files_payload,
+                    timeout=timeout,
+                )
     finally:
         if temp_client is not None:
             temp_client.close()
@@ -1029,7 +1195,7 @@ def _perform_request(step: dict[str, Any], ctx: CaseContext) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             parsed = response.text
     request_payload = _redact_payload(
-        {"method": method, "url": url, "headers": headers, "query": params, "body": body},
+        {"method": method, "url": url, "headers": headers, "query": params, "body": body, "files": files_meta},
         keys=True,
     )
     response_payload = _redact_payload(
@@ -1048,6 +1214,16 @@ def _perform_request(step: dict[str, Any], ctx: CaseContext) -> dict[str, Any]:
                 )
     ctx.requests.append(request_payload)
     ctx.responses.append(response_payload)
+    # 保存 Cookie 值到变量（不落库，供登出/重放类用例使用）
+    save_cookie = str(step.get("save_cookie") or "").strip()
+    if save_cookie:
+        raw_cookie = next(
+            (value for key, value in response.headers.items() if str(key).lower() == "set-cookie"),
+            "",
+        )
+        pair = str(raw_cookie).split(";", 1)[0]
+        if "=" in pair:
+            ctx.variables[save_cookie] = pair.split("=", 1)[1]
     # 保存变量
     for name, path_expr in (step.get("save") or {}).items():
         found, value = _json_path(parsed, path_expr)
@@ -1056,6 +1232,18 @@ def _perform_request(step: dict[str, Any], ctx: CaseContext) -> dict[str, Any]:
             if value is not None:
                 ctx.saved_variables.add(name)
     return response_payload
+
+
+def _materialize_fixture_file(name: str, spec: Any, ctx: CaseContext) -> str:
+    """把文件 fixture / 项目文件写到沙箱 artifacts/fixtures，返回路径。"""
+    filename, content, _content_type = _file_spec(spec, ctx)
+    directory = os.path.join(ARTIFACTS_DIR, "fixtures")
+    os.makedirs(directory, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name or filename)) or "fixture.bin"
+    path = os.path.join(directory, safe)
+    with open(path, "wb") as handle:
+        handle.write(content)
+    return path
 
 
 def _perform_browser(step: dict[str, Any], ctx: CaseContext) -> dict[str, Any]:
@@ -1094,6 +1282,20 @@ def _perform_browser(step: dict[str, Any], ctx: CaseContext) -> dict[str, Any]:
                 elif op == "text":
                     text = page.inner_text(action.get("selector", ""))
                     ctx.variables[action.get("save_as", "text")] = text
+                elif op == "upload":
+                    path = str(ctx.render(action.get("path") or ""))
+                    if not path:
+                        path = _materialize_fixture_file(
+                            str(action.get("name") or "upload"),
+                            {
+                                "file_id": action.get("file_id"),
+                                "filename": action.get("filename"),
+                                "content": action.get("content"),
+                                "content_type": action.get("content_type"),
+                            },
+                            ctx,
+                        )
+                    page.set_input_files(action.get("selector", ""), path)
                 elif op == "login":
                     account = ACCOUNTS.get(action.get("account", ""), {})
                     page.fill(action.get("username_selector", ""), str(account.get("username", "")))
@@ -1168,9 +1370,209 @@ def _perform_browser(step: dict[str, Any], ctx: CaseContext) -> dict[str, Any]:
     return output
 
 
-def run_case(case: dict[str, Any]) -> None:
-    """执行一条用例（由 pytest 调用；失败时抛出 AssertionError）。"""
-    ctx = CaseContext(case)
+
+def _http_login(precondition: dict[str, Any], ctx: CaseContext) -> None:
+    """按账号执行真实登录：优先 token；只有密码时走项目 profile 的 login_path。"""
+    ref = str(precondition.get("account_ref") or precondition.get("name") or "default")
+    account = ACCOUNTS.get(ref, {})
+    token = str(account.get("token") or "")
+    if token:
+        ctx.variables["auth_token"] = token
+        ctx.requests.append({"method": "LOGIN", "url": "account:" + ref, "headers": {}})
+        return
+
+    username = str(account.get("username") or "")
+    password = str(account.get("password") or "")
+    if not username or not password:
+        raise RuntimeError(f"http_login 账号不可用：{ref}（缺少 token 或用户名/密码）")
+
+    auth_profile = PROFILE.get("auth") if isinstance(PROFILE.get("auth"), dict) else {}
+    path = str(precondition.get("path") or auth_profile.get("login_path") or "")
+    if not path:
+        raise RuntimeError(
+            f"http_login 缺少登录路径：{ref}（项目 settings.profile.auth.login_path 或 precondition.path）"
+        )
+    user_field = str(precondition.get("user_field") or auth_profile.get("user_field") or "username")
+    password_field = str(
+        precondition.get("password_field") or auth_profile.get("password_field") or "password"
+    )
+    url = path if path.startswith("http") else BASE_URL.rstrip("/") + (
+        path if path.startswith("/") else "/" + path
+    )
+    content_type = str(precondition.get("content_type") or "form").lower()
+    payload = {user_field: username, password_field: password}
+    headers = {"Origin": BASE_URL.rstrip("/")}
+    try:
+        if content_type in {"json", "application/json"}:
+            response = ctx.client.post(url, json=payload, headers=headers)
+        else:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            response = ctx.client.post(url, data=payload, headers=headers)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"http_login 请求失败：{type(exc).__name__}: {exc}") from exc
+
+    response_payload = {
+        "status_code": response.status_code,
+        "headers": dict(response.headers),
+        "body": response.text[:2000],
+        "duration_ms": 0.0,
+    }
+    ctx.requests.append({"method": "LOGIN", "url": url, "headers": headers})
+    ctx.responses.append(_redact_payload(response_payload))
+    if response.status_code >= 400:
+        raise RuntimeError(f"http_login 失败：HTTP {response.status_code}")
+    body = (response.text or "").lower()
+    if any(word in body for word in ("invalid", "incorrect", "不正确", "失败")):
+        raise RuntimeError("http_login 失败：登录响应包含失败标记")
+
+    parsed: Any = None
+    try:
+        parsed = response.json()
+    except Exception:  # noqa: BLE001
+        parsed = None
+    token_path = str(precondition.get("token_path") or "")
+    found, value = _json_path(parsed, token_path) if token_path and parsed is not None else (False, None)
+    if not found and isinstance(parsed, dict):
+        for key in ("token", "access_token", "value"):
+            if parsed.get(key):
+                value = parsed[key]
+                found = True
+                break
+    if found and value:
+        ctx.variables["auth_token"] = value
+        ctx.variables["access_token"] = value
+        ctx.saved_variables.add("auth_token")
+
+
+def _fixture_save_rows(rows: list[tuple[Any, ...]], save: Any, ctx: CaseContext) -> None:
+    if not isinstance(save, dict) or not rows:
+        return
+    row = rows[0]
+    for name, target in save.items():
+        try:
+            if isinstance(target, int) or (isinstance(target, str) and target.isdigit()):
+                index = int(target)
+                ctx.variables[str(name)] = row[index] if 0 <= index < len(row) else None
+            elif isinstance(target, str) and target.startswith("$"):
+                found, value = _json_path(row, target)
+                if found:
+                    ctx.variables[str(name)] = value
+            else:
+                ctx.variables[str(name)] = row[0] if row else None
+        except Exception:  # noqa: BLE001
+            ctx.variables[str(name)] = None
+
+
+def _run_fixture_steps(steps: list[dict[str, Any]], ctx: CaseContext) -> None:
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        action = step.get("action")
+        responses_before = len(ctx.responses)
+        if action == "request":
+            _perform_request(step, ctx)
+        elif action == "db":
+            rows = _db_fetch(
+                ctx.render(step.get("sql", "")),
+                [ctx.render(p) for p in (step.get("params") or [])],
+                readonly=bool(step.get("readonly")),
+            )
+            ctx.responses.append(
+                {"status_code": 0, "body": {"rows": [list(r) for r in rows]}, "duration_ms": 0}
+            )
+        elif action == "sleep":
+            time.sleep(float(step.get("seconds") or 1))
+        elif action == "command":
+            _run_command_step(step, ctx)
+        elif action == "parallel":
+            _run_parallel_step(step, ctx)
+        else:
+            continue
+        for assertion in step.get("assert") or []:
+            response = ctx.responses[-1] if len(ctx.responses) > responses_before else {}
+            outcome = _evaluate_assertion(assertion, ctx, response)
+            _annotate_step(outcome, step, index)
+            ctx.fixture_assertions.append(outcome)
+            if not outcome["passed"] and not outcome["pending"]:
+                raise AssertionError(f"fixture 断言失败：{outcome['detail']}")
+
+
+def _run_fixtures(case: dict[str, Any], ctx: CaseContext) -> None:
+    fixtures = case.get("fixtures")
+    if not isinstance(fixtures, list):
+        fixtures = []
+    for fixture in fixtures:
+        if not isinstance(fixture, dict):
+            continue
+        kind = str(fixture.get("kind") or "").lower()
+        name = str(fixture.get("name") or kind or "fixture")
+        if kind in {"http_login", "login"}:
+            _http_login(fixture, ctx)
+        elif kind in {"api", "steps", "request"}:
+            _run_fixture_steps(list(fixture.get("steps") or []), ctx)
+        elif kind in {"sql", "db"}:
+            sql = ctx.render(fixture.get("sql") or "")
+            if not sql:
+                raise RuntimeError(f"fixture {name} 缺少 sql")
+            rows = _db_fetch(
+                sql,
+                [ctx.render(p) for p in (fixture.get("params") or [])],
+                readonly=bool(fixture.get("readonly")),
+            )
+            _fixture_save_rows(rows, fixture.get("save"), ctx)
+        elif kind in {"file", "files"}:
+            path = _materialize_fixture_file(name, fixture, ctx)
+            ctx.variables[name] = path
+            ctx.variables[f"{name}_path"] = path
+            if fixture.get("save_as"):
+                ctx.variables[str(fixture["save_as"])] = path
+        elif kind in {"command", "cli"}:
+            _run_command_step(fixture, ctx)
+        elif kind == "dataset":
+            row = fixture.get("row") if isinstance(fixture.get("row"), dict) else {}
+            for key, value in row.items():
+                ctx.variables[str(key)] = value
+        elif kind in {"manual", "none"}:
+            if fixture.get("required") and not fixture.get("skip"):
+                raise RuntimeError(f"手工前置未满足：{fixture.get('note') or name}")
+        else:
+            if fixture.get("required"):
+                raise RuntimeError(f"未知 fixture 类型：{kind}")
+        if fixture.get("cleanup"):
+            ctx.fixture_cleanups.append(fixture)
+
+
+def _run_cleanup_steps(steps: list[dict[str, Any]], ctx: CaseContext, *, label: str) -> list[str]:
+    errors: list[str] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        try:
+            action = step.get("action")
+            if action == "request":
+                if _uses_unsaved_default(step, ctx) and str(step.get("method") or "").upper() == "DELETE":
+                    ctx.notes.append(f"跳过{label}：未创建当前用例自己的项目，不能删除默认项目")
+                    continue
+                _perform_request(step, ctx)
+            elif action == "db" and step.get("sql"):
+                _db_fetch(
+                    ctx.render(step["sql"]),
+                    [ctx.render(p) for p in (step.get("params") or [])],
+                    readonly=bool(step.get("readonly")),
+                )
+            elif action == "command":
+                _run_command_step(step, ctx)
+            elif action == "sleep":
+                time.sleep(float(step.get("seconds") or 1))
+        except Exception as exc:  # noqa: BLE001
+            message = f"{label}步骤失败：{exc}"
+            ctx.errors.append(message)
+            errors.append(message)
+    return errors
+
+
+def _execute_case(case: dict[str, Any], ctx: CaseContext) -> dict[str, Any]:
+    """执行单次用例（一个数据行）；返回结果但不落盘。"""
     started = time.time()
     status = "pass"
     screenshot: str | None = None
@@ -1182,7 +1584,7 @@ def run_case(case: dict[str, Any]) -> None:
     try:
         # 没有步骤的用例（例如「缺少输入」）→ 标记为 skipped，不判失败
         if not (case.get("steps") or []):
-            result = {
+            return {
                 "case_id": case.get("id"),
                 "title": case.get("title"),
                 "status": "skipped",
@@ -1199,26 +1601,30 @@ def run_case(case: dict[str, Any]) -> None:
                     "assertions": [],
                     "pending_assertions": [],
                     "missing_input": case.get("missing_input", ""),
+                    "fixture_assertions": [],
+                    "cleanup_errors": [],
+                    "data_index": ctx.data_index,
                 },
                 "error": None,
             }
-            _write_result(result)
-            return
 
-        # 前置条件
+        # 兼容第一版 preconditions；新用例优先使用 fixtures。
         for precondition in case.get("preconditions") or []:
+            if not isinstance(precondition, dict):
+                continue
             kind = precondition.get("kind")
             if kind == "http_login":
-                account = ACCOUNTS.get(precondition.get("account_ref") or "default", {})
-                token = account.get("token")
-                if token:
-                    ctx.variables["auth_token"] = token
-                    ctx.requests.append({"method": "LOGIN", "url": "account:" + str(precondition.get("account_ref")), "headers": {}})
+                _http_login(precondition, ctx)
             elif kind == "db_fixture" and precondition.get("sql"):
                 try:
-                    _db_fetch(precondition["sql"], [])
+                    _db_fetch(
+                        ctx.render(precondition["sql"]),
+                        [ctx.render(p) for p in (precondition.get("params") or [])],
+                    )
                 except Exception as exc:  # noqa: BLE001
-                    ctx.errors.append(f"前置 SQL 执行失败：{exc}")
+                    raise RuntimeError(f"前置 SQL 执行失败：{exc}") from exc
+
+        _run_fixtures(case, ctx)
 
         # 步骤
         inline_assertion_keys: set[str] = set()
@@ -1241,8 +1647,14 @@ def run_case(case: dict[str, Any]) -> None:
                 result = _perform_browser(step, ctx)
                 screenshot = result.get("screenshot")
             elif action == "db":
-                rows = _db_fetch(ctx.render(step.get("sql", "")), [ctx.render(p) for p in (step.get("params") or [])])
-                ctx.responses.append({"status_code": 0, "body": {"rows": [list(r) for r in rows]}, "duration_ms": 0})
+                rows = _db_fetch(
+                    ctx.render(step.get("sql", "")),
+                    [ctx.render(p) for p in (step.get("params") or [])],
+                    readonly=bool(step.get("readonly")),
+                )
+                ctx.responses.append(
+                    {"status_code": 0, "body": {"rows": [list(r) for r in rows]}, "duration_ms": 0}
+                )
             elif action == "sleep":
                 time.sleep(float(step.get("seconds") or 1))
             elif action == "command":
@@ -1274,11 +1686,9 @@ def run_case(case: dict[str, Any]) -> None:
                         failure_step_index = index
                     ctx.errors.append(f"断言失败：{outcome['detail']}")
                 if ctx.assertion_response is None:
-                    # 顶层断言绑定到「第一个带内联断言的步骤」的响应
                     ctx.assertion_response = step_response
 
-        # 顶层断言：优先用 step_index 绑定到对应步骤的响应；
-        # 与步骤内联重复的同一检查不再重复判定。
+        # 顶层断言
         for assertion in case.get("assertions") or []:
             if _assertion_key(assertion) in inline_assertion_keys:
                 continue
@@ -1297,10 +1707,7 @@ def run_case(case: dict[str, Any]) -> None:
                     failure_step_index = step_index
                 ctx.errors.append(f"断言失败：{outcome['detail']}")
 
-        if ctx.assertion_failed:
-            status = "fail"
-        else:
-            status = "pass"
+        status = "fail" if ctx.assertion_failed else "pass"
     except AssertionError as exc:
         status = "fail"
         error = str(exc)
@@ -1313,7 +1720,6 @@ def run_case(case: dict[str, Any]) -> None:
             failure_step_index = current_step_index
         ctx.errors.append(traceback.format_exc(limit=5))
 
-    # 日志里给一条执行结论，避免用例通过时「日志」页完全空白、无法判断是否正常
     pending_count = sum(1 for item in assertion_results if item.get("pending"))
     if status == "pass":
         if assertion_results:
@@ -1329,7 +1735,6 @@ def run_case(case: dict[str, Any]) -> None:
         )
         ctx.notes.append(f"用例失败：{failed_count}/{len(assertion_results)} 条断言失败")
 
-    # 顶层 request/response 必须指向真正失败的步骤；cleanup 的 DELETE 不能覆盖它。
     if status in {"fail", "error"} and failure_step_index is not None:
         top_request = ctx.step_requests.get(failure_step_index, ctx.requests[-1] if ctx.requests else {})
         top_response = ctx.step_responses.get(failure_step_index, ctx.responses[-1] if ctx.responses else {})
@@ -1337,25 +1742,28 @@ def run_case(case: dict[str, Any]) -> None:
         top_request = ctx.requests[-1] if ctx.requests else {}
         top_response = ctx.responses[-1] if ctx.responses else {}
 
-    # 清理步骤（失败也要执行）
-    for step in case.get("cleanup") or []:
-        try:
-            if step.get("action") == "request":
-                if _uses_unsaved_default(step, ctx) and str(step.get("method") or "").upper() == "DELETE":
-                    ctx.notes.append("跳过清理：未创建当前用例自己的项目，不能删除默认项目")
-                    continue
-                _perform_request(step, ctx)
-            elif step.get("action") == "db" and step.get("sql"):
-                _db_fetch(ctx.render(step["sql"]), [ctx.render(p) for p in (step.get("params") or [])])
-        except Exception as exc:  # noqa: BLE001
-            ctx.errors.append(f"清理步骤失败：{exc}")
+    # 清理：先用例 cleanup，再逆序 fixture cleanup；两者失败都不能静默。
+    cleanup_errors = _run_cleanup_steps(list(case.get("cleanup") or []), ctx, label="清理")
+    fixture_cleanup_errors: list[str] = []
+    for fixture in reversed(ctx.fixture_cleanups):
+        fixture_cleanup_errors.extend(
+            _run_cleanup_steps(
+                list(fixture.get("cleanup") or []),
+                ctx,
+                label=f"fixture {fixture.get('name') or fixture.get('kind')} 清理",
+            )
+        )
+    cleanup_errors.extend(fixture_cleanup_errors)
+    if cleanup_errors and status == "pass":
+        status = "error"
+        error = "清理失败：" + "；".join(cleanup_errors)
 
     try:
         ctx.client.close()
     except Exception:  # noqa: BLE001
         pass
 
-    result = {
+    return {
         "case_id": case.get("id"),
         "title": case.get("title"),
         "status": status,
@@ -1372,16 +1780,100 @@ def run_case(case: dict[str, Any]) -> None:
             "errors": ctx.errors,
             "assertions": assertion_results,
             "pending_assertions": [a for a in assertion_results if a.get("pending")],
+            "fixture_assertions": ctx.fixture_assertions,
+            "cleanup_errors": cleanup_errors,
             "commands": ctx.commands[-8:],
             "requests": ctx.requests,
             "responses": ctx.responses,
             "failed_step_index": failure_step_index,
+            "data_index": ctx.data_index,
         },
         "error": error,
     }
-    _write_result(result)
 
+
+def _raise_for_status(status: str, message: str) -> None:
     if status == "fail":
-        raise AssertionError("; ".join(ctx.errors) or "断言失败")
+        raise AssertionError(message or "断言失败")
     if status == "error":
-        raise RuntimeError(error or "执行异常")
+        raise RuntimeError(message or "执行异常")
+
+
+def run_case(case: dict[str, Any]) -> None:
+    """执行一条用例（由 pytest 调用；支持按数据集行迭代）。
+
+    一个数据行对应一次完整执行；任意一行 error/fail 会让用例失败/异常。
+    """
+    rows = case.get("__data_rows")
+    if not isinstance(rows, list) or not rows:
+        ctx = CaseContext(case)
+        result = _execute_case(case, ctx)
+        _write_result(result)
+        _raise_for_status(result["status"], str(result.get("error") or "; ".join(result["output"]["errors"])))
+        return
+
+    results: list[dict[str, Any]] = []
+    for index, raw_row in enumerate(rows):
+        row = raw_row if isinstance(raw_row, dict) else {"value": raw_row}
+        ctx = CaseContext(case)
+        ctx.data_index = index
+        ctx.variables["data"] = row
+        ctx.variables["row_index"] = index
+        for key, value in row.items():
+            # 兼容直接写 {{field}} 的旧用例；{{data.field}} 是推荐写法。
+            if isinstance(key, str) and key not in ctx.variables:
+                ctx.variables[key] = value
+        results.append(_execute_case(case, ctx))
+
+    statuses = [item.get("status") for item in results]
+    if "error" in statuses:
+        status = "error"
+    elif "fail" in statuses:
+        status = "fail"
+    elif all(item == "skipped" for item in statuses):
+        status = "skipped"
+    else:
+        status = "pass"
+
+    failed = next((item for item in results if item.get("status") in {"fail", "error"}), None)
+    top = failed or results[-1]
+    assertions: list[dict[str, Any]] = []
+    pending_assertions: list[dict[str, Any]] = []
+    errors: list[str] = []
+    iterations: list[dict[str, Any]] = []
+    logs: list[str] = []
+    for index, item in enumerate(results):
+        for assertion in (item.get("output") or {}).get("assertions") or []:
+            assertions.append({**assertion, "data_index": index})
+        pending_assertions.extend((item.get("output") or {}).get("pending_assertions") or [])
+        errors.extend(f"[data {index}] {message}" for message in (item.get("output") or {}).get("errors") or [])
+        iterations.append(
+            {
+                "index": index,
+                "status": item.get("status"),
+                "duration_ms": item.get("duration_ms", 0.0),
+                "assertions": len((item.get("output") or {}).get("assertions") or []),
+                "logs": item.get("logs", ""),
+                "error": item.get("error"),
+            }
+        )
+        logs.append(f"[data {index}] {item.get('logs') or ''}".strip())
+
+    result = {
+        **top,
+        "status": status,
+        "duration_ms": sum(float(item.get("duration_ms") or 0.0) for item in results),
+        "logs": "\n".join(logs),
+        "output": {
+            **(top.get("output") or {}),
+            "assertion_failed": any((item.get("output") or {}).get("assertion_failed") for item in results),
+            "assertions": assertions,
+            "pending_assertions": pending_assertions,
+            "errors": errors,
+            "iterations": iterations,
+            "data_rows": len(rows),
+        },
+    }
+    _write_result(result)
+    message = str(result.get("error") or "; ".join(errors))
+    _raise_for_status(status, message)

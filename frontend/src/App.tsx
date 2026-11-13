@@ -12,6 +12,7 @@ import RunDetail from './pages/RunDetail'
 import Runs from './pages/Runs'
 import RunCompare from './pages/RunCompare'
 import Settings from './pages/Settings'
+import TestData from './pages/TestData'
 import { EmptyState, Button } from './ui/kit'
 import { Link } from 'react-router-dom'
 
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="runs/compare" element={<RunCompare />} />
           <Route path="runs/:runId" element={<RunDetail />} />
           <Route path="automation" element={<Automation />} />
+          <Route path="test-data" element={<TestData />} />
           <Route path="findings" element={<Findings />} />
           <Route path="knowledge" element={<Navigate to="sources" replace />} />
           <Route path="knowledge/:tab" element={<KnowledgeRoute />} />
