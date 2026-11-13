@@ -419,3 +419,41 @@ flaky 判定、鉴权失败期望值等 10 条）。
 | 正常流优先 | `app/agent/providers/mock.py::_functional_cases`、真实模型侧 prompt 约束 |
 | 数据库为准 | `app/executor/compiler.py`（代码由数据库生成） |
 | 不可信代码沙箱执行 | `app/sandbox/*`（`BerthSandbox` / `LocalSandbox`） |
+
+## Bug 发现率专项
+
+目标：从“接口能跑”转向“能抓错”。每项先写分析，再实现并用真实项目验证。
+
+### 1. 差分 / 越权矩阵
+- 分析：同一资源换两个普通账号访问，比较页面、REST、git 三种通道；只测匿名/管理员会漏横向越权。
+- [x] `idor-differential`：alice 建私有项目，viewer 读页面/API/git；反向再测
+- [x] `api-authz`：从代码 `seg[0]` 抽 `/api/v1/<资源>`，测匿名 + 低权限
+- [x] `delete-authz`：guest 成员尝试删除他人项目
+- [x] 变异验证：删除项目/成员管理/项目设置三个管理员校验被用例杀死
+
+### 2. 状态机
+- 分析：单接口断言看不出“状态迁移后旧凭据是否仍有效”，需要登录/登出/吊销/重放链路。
+- [x] `token-revocation`：建令牌 → 列表取 id → 吊销 → 旧令牌访问 401
+- [x] `session-logout`：登录保存 Cookie → 登出 → 旧 Cookie 重放 401
+- [x] 运行器补 `save_cookie`（只存变量，不落库）
+- [ ] 归档 → push：需要 git wire 协议和可写工作区，当前 runner 没有 git 客户端；改为 CLI 用例后再做
+
+### 3. 协议 / 输入 fuzz
+- 分析：客户端格式错误应 4xx；5xx、堆栈、解析崩溃才是缺陷。
+- [x] `fuzz-json`：API 畸形 JSON + npm 发布畸形 JSON；发现 NPM 发布 500（#230）
+- [x] `fuzz-protocol`：git pkt-line 乱码、npm dist-tag 畸形 JSON、非法 URL 字节
+- [x] 运行器支持原始字符串 body；二进制响应只存 size/sha256，避免 pgvector/JSONB 写入崩溃
+
+### 4. 并发竞态
+- 分析：并发同名创建、重复提交、最后管理员都可能绕过“先查后写”。
+- [x] `race-condition`：5 个并发同名项目创建，断言状态码集合只有一个成功
+- [x] `duplicate-submit`：同名项目提交两次，第二次不得再成功
+- [x] 运行器补 `parallel` 步骤（独立 cookie 罐）
+- [ ] 最后管理员并发禁用：需要两个临时管理员且可能把自己锁死，暂不自动化
+
+### 5. 变异测试
+- 分析：用“改坏代码 → 看测试是否变红”衡量断言杀伤力，而不是只看用例数。
+- [x] `scripts/mutation_test_dmgit.py`：11 个鉴权/路径/输入/CSRF 变异体
+- [x] 第一轮 10/11，幸存者是删除项目鉴权；补 `delete-authz` 后 13/13
+- [x] 补成员管理、项目设置两个变异体并杀死
+- 当前基线：**13/13 = 100%**（定向检查，不等于全量 377 条用例）
