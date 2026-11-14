@@ -116,3 +116,21 @@ class CookieWithoutHttpOnly(AttackPattern):
 
 新增模式时优先复用 `AttackContext` 的接口/账号查询与 `_policy()`、`_admin_step()`；
 不要写死项目名、路径或账号，否则换一个 SUT 就失效。
+
+## 7. 隔离安全实验室
+
+用于**不可逆或会锁死管理面**的探测，不碰项目真实环境：
+
+```http
+POST /api/projects/{id}/security-lab/run
+```
+
+流程：复制代码 → `go build` → 临时数据目录 + 随机端口启动 → 建账号/夹具 →
+执行探针 → 生成 Finding → 杀进程并删除临时目录。
+
+当前探针：
+
+- 同名用户组与个人命名空间冲突（会创建无法删除的组，所以只在实验室跑）；
+- 最后管理员并发禁用（会锁死管理面，所以只在实验室跑）。
+
+实验室产出的 Finding 由平台自己写成 `confirmed_by=auto:security-lab`，不是人工录入。

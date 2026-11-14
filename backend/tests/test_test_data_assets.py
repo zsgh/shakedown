@@ -309,3 +309,142 @@ def test_dataset_mask_pii_preview(client, sample_project):
     assert "***@example.com" in masked["rows"][0]["data"]["email"]
     raw = client.get(f"/api/projects/{sample_project.id}/test-datasets/{dataset_id}").json()
     assert "@example.com" in raw["rows"][0]["data"]["email"]
+
+
+def test_runtime_pre_renders_dataset_placeholders(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime, "RESULTS_DIR", str(tmp_path / "results"))
+    monkeypatch.setattr(runtime, "ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    seen = []
+
+    def fake_request(step, ctx):
+        seen.append(ctx.render(step.get("body")))
+        ctx.requests.append({"method": "GET", "url": "/x"})
+        ctx.responses.append({"status_code": 200, "body": {}, "duration_ms": 1.0})
+        return ctx.responses[-1]
+
+    monkeypatch.setattr(runtime, "_perform_request", fake_request)
+    case = {
+        "id": "render-data",
+        "title": "数据占位符",
+        "steps": [{"action": "request", "method": "POST", "path": "/x", "body": {"email": "{{data.email}}"}}],
+        "__data_rows": [{"email": "shakedown-{{run_id}}-0@example.com"}],
+    }
+    runtime.run_case(case)
+    assert seen[0]["email"].startswith("shakedown-")
+    assert "{{run_id}}" not in seen[0]["email"]
+
+
+def test_auto_dataset_from_data_placeholders(client, session, sample_project):
+    from app.test_data_auto import ensure_auto_dataset, extract_data_fields
+    from app.test_data_service import load_case_data
+
+    spec = {
+        "title": "auto",
+        "dimension": "functional",
+        "type": "api",
+        "steps": [
+            {
+                "action": "request",
+                "method": "POST",
+                "path": "/api/users",
+                "body": {"email": "{{data.email}}", "name": "{{data.name}}", "amount": "{{data.amount}}"},
+            }
+        ],
+    }
+    case = CaseModel(
+        project_id=sample_project.id,
+        title="auto",
+        dimension="functional",
+        case_type="api",
+        spec=spec,
+        steps=spec["steps"],
+    )
+    session.add(case)
+    session.commit()
+    session.refresh(case)
+    assert extract_data_fields(spec) == ["amount", "email", "name"]
+
+    dataset = ensure_auto_dataset(session, sample_project, case)
+    assert dataset is not None
+    assert dataset.name == f"auto-case-{case.id}"
+    assert len(dataset.rows) == 1
+    assert any(field["name"] == "email" and field.get("format") == "email" for field in dataset.schema_json["fields"])
+    rows = load_case_data(session, [case])
+    assert len(rows[case.id]) == 1
+    assert "@example.com" in rows[case.id][0]["email"]
+
+    # 第二次调用复用同一个数据集 / 绑定，不重复创建。
+    again = ensure_auto_dataset(session, sample_project, case)
+    assert again is not None and again.id == dataset.id
+
+
+def test_autofill_api_and_iterate_mode(client, session, sample_project):
+    from app.test_data_auto import autofill_cases
+
+    sample_project.settings_json = {"test_data_auto_rows": 3}
+    session.commit()
+    case = CaseModel(
+        project_id=sample_project.id,
+        title="auto iterate",
+        dimension="functional",
+        case_type="api",
+        spec={
+            "title": "auto iterate",
+            "dimension": "functional",
+            "type": "api",
+            "steps": [{"action": "request", "method": "GET", "path": "/x", "query": {"email": "{{data.email}}"}}],
+        },
+        steps=[{"action": "request", "method": "GET", "path": "/x"}],
+    )
+    session.add(case)
+    session.commit()
+    result = autofill_cases(session, sample_project)
+    session.commit()
+    assert result["cases"] >= 1
+    item = next(item for item in result["items"] if item["case_id"] == case.id)
+    assert item["row_count"] == 3
+    assert item["mode"] == "iterate"
+    response = client.post(f"/api/projects/{sample_project.id}/test-data/autofill").json()
+    assert response["project_id"] == sample_project.id
+
+
+def test_auto_dataset_supports_legacy_placeholders(session, sample_project):
+    from app.test_data_auto import ensure_auto_dataset, extract_data_fields
+
+    spec = {
+        "title": "legacy",
+        "dimension": "functional",
+        "type": "api",
+        "steps": [
+            {
+                "action": "request",
+                "method": "POST",
+                "path": "/api/users",
+                "body": {"email": "{{email}}", "name": "shakedown-{{run_id}}"},
+                "save": {"user_id": "$.id"},
+            },
+            {
+                "action": "request",
+                "method": "GET",
+                "path": "/api/users/{{user_id}}",
+            },
+        ],
+    }
+    case = CaseModel(
+        project_id=sample_project.id,
+        title="legacy",
+        dimension="functional",
+        case_type="api",
+        spec=spec,
+        steps=spec["steps"],
+    )
+    session.add(case)
+    session.commit()
+    session.refresh(case)
+    names = extract_data_fields(spec)
+    assert "email" in names
+    assert "run_id" not in names
+    assert "user_id" not in names
+    dataset = ensure_auto_dataset(session, sample_project, case)
+    assert dataset is not None
+    assert any(field["name"] == "email" for field in dataset.schema_json["fields"])

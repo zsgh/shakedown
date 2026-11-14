@@ -183,3 +183,73 @@ POST /api/projects/{id}/test-files   (multipart form: file, name)
 ## 10. 任务清单
 
 详细的完成项与跳过原因见 [test-data-todo.md](test-data-todo.md)。
+
+## 11. 五分钟跑通
+
+仓库自带一条可执行的端到端演示：
+
+```bash
+.venv/bin/python scripts/demo_test_data.py
+```
+
+它会自动：
+
+1. 拉起 `examples/demo-target/server.py`；
+2. 建项目 + 数据集（3 行用户数据）；
+3. 建用例，body 使用 `{{data.email}}` / `{{data.name}}` / `{{data.role}}`；
+4. 绑定数据集（`mode=iterate`）；
+5. 在本地沙箱里逐行执行「建用户 → 查用户 → 断言 → 删除」。
+
+预期输出：
+
+```
+✓ 建数据集 #1，3 行，PII=['email', 'name']
+✓ 建用例 #4953，使用 {{data.*}}
+✓ 绑定数据集 #1（iterate）
+
+▶ 执行结果
+  状态：pass
+  数据行：3 / iterations=3
+    [0] pass · 4 条断言
+    [1] pass · 4 条断言
+    [2] pass · 4 条断言
+
+✅ 3 行数据全部通过
+```
+
+> 数据集行里可以保留 `{{run_id}}` / `{{uuid}}` / `{{timestamp}}`；执行时会先渲染成当前 run 的真实值，再注入 `{{data.*}}`。
+
+## 12. 全自动模式
+
+不想手工建数据集 / 绑定？只写 `{{data.字段}}` 即可。
+
+```bash
+.venv/bin/python scripts/demo_test_data.py --auto
+```
+
+实际输出：
+
+```text
+✓ 建项目 #2604
+✓ 建用例 #4955，使用 {{data.*}}
+✓ 自动补数据集 #3，3 行，无需手工创建/绑定
+
+▶ 执行结果
+  状态：pass
+  数据行：3 / iterations=3
+    [0] pass · 4 条断言
+    [1] pass · 4 条断言
+    [2] pass · 4 条断言
+```
+
+执行前平台会：
+
+1. 扫描用例 body / query 里的 `{{data.x}}`（以及旧写法 `{{email}}`）；
+2. 从接口 `request_body` 或字段名推断类型 / 格式；
+3. 创建/复用 `auto-case-{id}` 数据集；
+4. 自动绑定，行数由项目设置 `test_data_auto_rows` 控制（默认 1，>1 自动 iterate）；
+5. 已有绑定或没有数据占位符的用例跳过。
+
+也可以在「测试数据」页点 **「自动补用例数据」**，提前把整个项目的 `auto-case-*` 数据集补出来。
+
+> 用例生成提示词已改为优先使用 `{{data.字段}}`；老用例里的 `{{email}}` 也会被自动识别为数据字段。固定常量、枚举、`save` 变量、`run_id` / `uuid` / `timestamp`、账号占位符不会被误当成数据。

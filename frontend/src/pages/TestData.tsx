@@ -41,6 +41,20 @@ export default function TestData() {
     [projectId],
   )
 
+  async function autofill() {
+    setBusy('autofill')
+    try {
+      const result = await api.post<Record<string, any>>(`/projects/${projectId}/test-data/autofill`, {})
+      toast.success('自动补数据完成', `处理 ${result.cases} 条用例，跳过 ${result.skipped} 条`)
+      datasets.reload()
+      health.reload()
+    } catch (error) {
+      toast.error('自动补数据失败', String(error))
+    } finally {
+      setBusy('')
+    }
+  }
+
   async function createDataset() {
     setBusy('create')
     try {
@@ -181,9 +195,12 @@ export default function TestData() {
         title="测试数据"
         subtitle="数据集、行迭代、fixture 文件与账号/数据库准备状态。执行时通过 {{data.字段}} 引用。"
         actions={
-          <Button icon="refresh" onClick={() => { datasets.reload(); health.reload(); files.reload() }}>
-            刷新
-          </Button>
+          <>
+            <Button icon="sparkles" loading={busy === 'autofill'} onClick={autofill}>自动补用例数据</Button>
+            <Button icon="refresh" onClick={() => { datasets.reload(); health.reload(); files.reload() }}>
+              刷新
+            </Button>
+          </>
         }
       />
 

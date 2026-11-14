@@ -11,6 +11,7 @@ from app.db import get_db
 from app.errors import NotFoundError
 from app.models import Project
 from app.security.generator import generate_cases, scan_project
+from app.security_lab import run_probes
 
 router = APIRouter(tags=["security"])
 
@@ -52,6 +53,15 @@ def scan_attack_pack(
 ) -> dict[str, Any]:
     project = _project(db, project_id)
     return scan_project(db, project, include_findings=payload.include_findings, pattern_ids=payload.pattern_ids)
+
+
+@router.post("/projects/{project_id}/security-lab/run")
+def run_security_lab(project_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """在一次性隔离实例上跑不可逆/会锁死管理面的探针。"""
+    project = _project(db, project_id)
+    result = run_probes(db, project)
+    db.commit()
+    return result
 
 
 @router.post("/projects/{project_id}/attack-pack/generate")

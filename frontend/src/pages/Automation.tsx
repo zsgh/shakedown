@@ -213,6 +213,22 @@ export default function Automation() {
     }
   }
 
+  async function runSecurityLab() {
+    if (!projectId) return
+    setBusy('attack-lab')
+    try {
+      const result = await api.post<Record<string, any>>(`/projects/${projectId}/security-lab/run`)
+      const found = result.findings ?? []
+      if (found.length) toast.success(`隔离实验室发现：${found.join('、')}`)
+      else toast.info('隔离实验室未发现新问题')
+      await loadAll()
+    } catch (error) {
+      toast.error('隔离实验室执行失败', String(error))
+    } finally {
+      setBusy('')
+    }
+  }
+
   async function generateAttackPack(withValidation: boolean) {
     if (!projectId) return
     setBusy(withValidation ? 'attack-validate' : 'attack-generate')
@@ -798,6 +814,9 @@ export default function Automation() {
                   <div className="spacer" />
                   <Button size="sm" icon="refresh" loading={busy === 'attack'} onClick={() => scanAttackPack()}>
                     重新扫描
+                  </Button>
+                  <Button size="sm" icon="play" loading={busy === 'attack-lab'} onClick={runSecurityLab}>
+                    隔离实验室
                   </Button>
                   <Button
                     size="sm"

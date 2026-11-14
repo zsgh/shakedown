@@ -461,4 +461,4 @@ flaky 判定、鉴权失败期望值等 10 条）。
 ### 已发现的新缺陷（安全专项）
 - [x] #231 `[越权] 同名用户组可读写该用户的个人项目`：用户组与个人命名空间同名时，`Access`/`canCreateIn` 不区分两种 namespace；隔离实例复现：bob 读取 alice 私有项目 200、在 alice 命名空间创建项目 201。
 - [x] #232 `[竞态] 并发禁用可把最后一个管理员也禁掉`：两个管理员并发 toggle 对方，`AdminCount` 与 `UpdateUser` 存在 TOCTOU，最终 0 个启用管理员，管理面 401。
-- [ ] 自动回归：两项都需要“一次性隔离实例”或组删除能力，直接进主用例会污染 SUT / 锁死管理面，暂未自动化。
+- [x] 自动回归：新增 `POST /projects/{id}/security-lab/run`，由平台自己构建一次性实例执行上述两项探针；Finding 标记 `auto:security-lab`。

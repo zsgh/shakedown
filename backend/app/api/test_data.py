@@ -15,6 +15,7 @@ from app.schemas.test_data import (
     TestDatasetCreate,
     TestDatasetUpdate,
 )
+from app.test_data_auto import autofill_cases
 from app.test_data_service import (
     bind_case_dataset,
     binding_payload,
@@ -123,6 +124,19 @@ def delete_project_dataset(project_id: int, dataset_id: int, db: Session = Depen
 def project_test_data_health(project_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     project = _project(db, project_id)
     return test_data_health(db, project)
+
+
+@router.post("/projects/{project_id}/test-data/autofill")
+def autofill_project_test_data(
+    project_id: int,
+    force: bool = False,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """扫描用例里的 {{data.*}} 占位符，自动建数据集并绑定。"""
+    project = _project(db, project_id)
+    result = autofill_cases(db, project, force=force)
+    db.commit()
+    return {"project_id": project.id, **result}
 
 
 @router.post("/projects/{project_id}/test-data/cleanup")

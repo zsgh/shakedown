@@ -43,6 +43,7 @@ from app.fixes import (
 )
 from app.logging import get_logger
 from app.models import CaseResult, Feature, Finding, KnowledgeSource, Project, Run, Task, TestCase
+from app.test_data_auto import ensure_auto_datasets
 from app.test_data_service import file_blobs_for_specs, load_case_data
 from app.verification_evidence import record_replay_evidence
 from app.worker.queue import enqueue, has_active_task, heartbeat
@@ -671,6 +672,11 @@ def handle_execute_run(session: Session, payload: dict[str, Any]) -> dict[str, A
             session.commit()
             return {"executed": 0}
         endpoint_schemas = load_endpoint_schemas(session, project.id)
+        auto_data = ensure_auto_datasets(session, project, cases)
+        if auto_data.get("cases"):
+            env.notes.append(f"自动补数据：{auto_data['cases']} 条用例")
+            run.env_snapshot = {**(run.env_snapshot or {}), "auto_data": auto_data}
+            session.commit()
         data_by_case = load_case_data(session, cases)
         file_blobs = file_blobs_for_specs(session, project, [case.spec or {} for case in cases])
 

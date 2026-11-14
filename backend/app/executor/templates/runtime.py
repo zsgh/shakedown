@@ -1817,9 +1817,11 @@ def run_case(case: dict[str, Any]) -> None:
         row = raw_row if isinstance(raw_row, dict) else {"value": raw_row}
         ctx = CaseContext(case)
         ctx.data_index = index
-        ctx.variables["data"] = row
+        # 数据集里允许保留 {{run_id}} / {{uuid}} 占位符；先渲染成当前 run 的真实值。
+        rendered_row = {str(key): ctx.render(value) for key, value in row.items()}
+        ctx.variables["data"] = rendered_row
         ctx.variables["row_index"] = index
-        for key, value in row.items():
+        for key, value in rendered_row.items():
             # 兼容直接写 {{field}} 的旧用例；{{data.field}} 是推荐写法。
             if isinstance(key, str) and key not in ctx.variables:
                 ctx.variables[key] = value

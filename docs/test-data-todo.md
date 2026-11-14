@@ -15,7 +15,7 @@
   - 用例 cleanup + fixture cleanup 总执行；清理失败 → `error`
   - `output.cleanup_errors` / `output.fixture_assertions`
 - [x] **P0-3 生成器接入执行链路**
-  - 数据集行 → `{{data.*}}`
+  - 数据集行 → `{{data.*}}`；无绑定时自动建 `auto-case-{id}` 并绑定（含旧式 `{{email}}` 占位符）
   - `single` / `iterate` 执行
   - 嵌套对象 / 数组 / `$ref` / `oneOf` / `allOf`
   - 约束、关系（lt/lte/gt/gte/eq/ne）、unique、negative、PII 标记
@@ -67,6 +67,6 @@
 
 ## 验证
 
-- 后端：`cd backend && pytest -q` → 365 passed
+- 后端：`cd backend && pytest -q` → 369 passed
 - 前端：`cd frontend && pnpm run typecheck && pnpm run build`
 - 迁移：空库 `alembic upgrade head` 通过；开发库已升级到 `c7d9e1f3a5b7`
